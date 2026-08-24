@@ -295,21 +295,35 @@ input {
   gap: 0.7rem;
 }
 
-.message {
-  max-width: 65%;
-  background: var(--panel-alt);
-  border-radius: 10px;
-  padding: 0.5rem 0.7rem;
+.message-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  max-width: 70%;
   align-self: flex-start;
 }
 
-.message.own {
+.message-row.own {
   align-self: flex-end;
+  flex-direction: row-reverse;
+  max-width: 65%;
+}
+
+.message {
+  position: relative;
+  background: var(--panel-alt);
+  border-radius: 10px;
+  padding: 0.5rem 0.7rem;
+  min-width: 0;
+}
+
+.message.own {
   background: var(--accent-dim);
 }
 
 .message-meta {
   display: flex;
+  align-items: baseline;
   gap: 0.5rem;
   font-size: 0.72rem;
   color: var(--text-dim);
@@ -321,10 +335,168 @@ input {
   color: var(--accent);
 }
 
+.message-edited {
+  font-style: italic;
+  opacity: 0.75;
+}
+
 .message-content {
   font-size: 0.92rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-content.deleted {
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+/* ---------- Avatar ---------- */
+
+.avatar {
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* ---------- Message edit form ---------- */
+
+.message-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.message-edit-form input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.message-edit-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.message-edit-actions button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+}
+
+.message-edit-actions button:first-child {
+  background: var(--accent);
+  color: white;
+  border-color: transparent;
+}
+
+/* ---------- Reactions ---------- */
+
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.reaction {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  padding: 0.05rem 0.5rem;
+  line-height: 1.6;
+}
+
+.reaction.mine {
+  border-color: var(--accent);
+  color: var(--text);
+  background: rgba(108, 140, 255, 0.15);
+}
+
+/* ---------- Message hover actions ---------- */
+
+.message-actions {
+  position: absolute;
+  top: -0.7rem;
+  right: 0.4rem;
+  display: none;
+  gap: 0.15rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.1rem;
+}
+
+.message-row.own .message-actions {
+  right: auto;
+  left: 0.4rem;
+}
+
+.message:hover .message-actions {
+  display: flex;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  background: var(--panel-alt);
+}
+
+.emoji-picker-wrapper {
+  position: relative;
+}
+
+.emoji-picker {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 0.25rem;
+  display: flex;
+  gap: 0.15rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem;
+  z-index: 5;
+}
+
+.emoji-picker button {
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  padding: 0.15rem 0.3rem;
+  border-radius: 6px;
+}
+
+.emoji-picker button:hover {
+  background: var(--panel-alt);
+}
+
+.loading-older {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  padding: 0.3rem;
 }
 
 .typing-indicator {

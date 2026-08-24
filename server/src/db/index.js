@@ -35,12 +35,37 @@ db.exec(`
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     username TEXT NOT NULL,
     content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    edited_at TEXT,
+    deleted_at TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_messages_room_created
     ON messages(room_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(message_id, user_id, emoji)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_reactions_message
+    ON message_reactions(message_id);
 `);
+
+// Guard for databases created before edited_at/deleted_at existed.
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+ensureColumn('messages', 'edited_at', 'TEXT');
+ensureColumn('messages', 'deleted_at', 'TEXT');
 
 // Seed a couple of default public rooms if none exist yet.
 const roomCount = db.prepare('SELECT COUNT(*) AS count FROM rooms').get().count;

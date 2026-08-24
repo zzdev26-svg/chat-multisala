@@ -1,20 +1,51 @@
 import { useEffect, useRef } from 'react';
 import MessageInput from './MessageInput.jsx';
+import MessageItem from './MessageItem.jsx';
 
-function formatTime(iso) {
-  try {
-    return new Date(`${iso}Z`).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '';
-  }
-}
-
-export default function ChatWindow({ room, messages, currentUsername, users, typingUsers, onSend, onTyping }) {
+export default function ChatWindow({
+  room,
+  messages,
+  currentUsername,
+  users,
+  typingUsers,
+  hasMore,
+  loadingOlder,
+  onLoadOlder,
+  onSend,
+  onTyping,
+  onEdit,
+  onDelete,
+  onReact,
+}) {
+  const containerRef = useRef(null);
   const bottomRef = useRef(null);
+  const shouldStickToBottom = useRef(true);
+  const prevScrollHeight = useRef(0);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (shouldStickToBottom.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages.length]);
+
+  // After prepending older messages, restore the scroll position so the
+  // view doesn't jump around under the user.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !prevScrollHeight.current) return;
+    el.scrollTop = el.scrollHeight - prevScrollHeight.current;
+    prevScrollHeight.current = 0;
+  }, [messages]);
+
+  function handleScroll() {
+    const el = containerRef.current;
+    if (!el) return;
+    shouldStickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el.scrollTop < 60 && hasMore && !loadingOlder) {
+      prevScrollHeight.current = el.scrollHeight;
+      onLoadOlder();
+    }
+  }
 
   if (!room) {
     return <div className="chat-window empty">Elegi una sala para empezar a chatear.</div>;
@@ -29,15 +60,18 @@ export default function ChatWindow({ room, messages, currentUsername, users, typ
         </span>
       </header>
 
-      <div className="messages">
+      <div className="messages" ref={containerRef} onScroll={handleScroll}>
+        {loadingOlder && <div className="loading-older">Cargando mensajes anteriores...</div>}
         {messages.map((m) => (
-          <div key={m.id} className={m.username === currentUsername ? 'message own' : 'message'}>
-            <div className="message-meta">
-              <span className="message-author">{m.username}</span>
-              <span className="message-time">{formatTime(m.created_at)}</span>
-            </div>
-            <div className="message-content">{m.content}</div>
-          </div>
+          <MessageItem
+            key={m.id}
+            message={m}
+            isOwn={m.username === currentUsername}
+            currentUsername={currentUsername}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            onReact={onReact}
+          />
         ))}
         <div ref={bottomRef} />
       </div>

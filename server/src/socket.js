@@ -1,5 +1,8 @@
 import { db } from './db/index.js';
+import { insertMessage, editMessage, deleteMessage, toggleReaction } from './db/messages.js';
 import { verifyToken } from './utils/jwt.js';
+
+const ALLOWED_EMOJIS = new Set(['👍', '❤️', '😂', '😮', '😢', '🎉']);
 
 // roomId -> Map<socketId, { id, username, isGuest }>
 const roomPresence = new Map();
@@ -29,12 +32,32 @@ function removePresence(roomId, socketId) {
   if (map.size === 0) roomPresence.delete(roomId);
 }
 
+// Wraps a handler so a thrown/DB error never crashes the whole server —
+// it's reported back to that one client instead.
+function safeOn(socket, event, handler) {
+  socket.on(event, (...args) => {
+    try {
+      handler(...args);
+    } catch (err) {
+      console.error(`Error manejando el evento "${event}":`, err);
+      socket.emit('error:message', 'Ocurrio un error inesperado. Intenta de nuevo.');
+    }
+  });
+}
+
 export function registerSocketHandlers(io) {
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('No autenticado'));
     try {
-      socket.user = verifyToken(token);
+      const payload = verifyToken(token);
+      // Re-check against the DB (not just the JWT claims): the user may have
+      // been deleted, or the dev DB reset, since the token was issued.
+      const user = db.prepare('SELECT id, username, is_guest FROM users WHERE id = ?').get(payload.id);
+      if (!user || user.username !== payload.username) {
+        return next(new Error('Sesion invalida, volve a iniciar sesion.'));
+      }
+      socket.user = { id: user.id, username: user.username, isGuest: !!user.is_guest };
       next();
     } catch {
       next(new Error('Token invalido o expirado'));
@@ -44,7 +67,7 @@ export function registerSocketHandlers(io) {
   io.on('connection', (socket) => {
     const currentRooms = new Set();
 
-    socket.on('room:join', (roomId) => {
+    safeOn(socket, 'room:join', (roomId) => {
       roomId = Number(roomId);
       const room = db.prepare('SELECT id, name FROM rooms WHERE id = ?').get(roomId);
       if (!room) {
@@ -63,7 +86,7 @@ export function registerSocketHandlers(io) {
       });
     });
 
-    socket.on('room:leave', (roomId) => {
+    safeOn(socket, 'room:leave', (roomId) => {
       roomId = Number(roomId);
       socket.leave(`room:${roomId}`);
       currentRooms.delete(roomId);
@@ -74,7 +97,7 @@ export function registerSocketHandlers(io) {
       });
     });
 
-    socket.on('message:send', ({ roomId, content }) => {
+    safeOn(socket, 'message:send', ({ roomId, content }) => {
       roomId = Number(roomId);
       if (typeof content !== 'string' || !content.trim() || content.length > 2000) {
         socket.emit('error:message', 'Mensaje invalido.');
@@ -85,19 +108,51 @@ export function registerSocketHandlers(io) {
         return;
       }
 
-      const trimmed = content.trim();
-      const info = db
-        .prepare('INSERT INTO messages (room_id, user_id, username, content) VALUES (?, ?, ?, ?)')
-        .run(roomId, socket.user.id, socket.user.username, trimmed);
-
-      const message = db
-        .prepare('SELECT id, user_id, username, content, created_at FROM messages WHERE id = ?')
-        .get(info.lastInsertRowid);
-
+      const message = insertMessage(roomId, socket.user.id, socket.user.username, content.trim());
       io.to(`room:${roomId}`).emit('message:new', { roomId, message });
     });
 
-    socket.on('typing', ({ roomId, isTyping }) => {
+    safeOn(socket, 'message:edit', ({ roomId, messageId, content }) => {
+      roomId = Number(roomId);
+      messageId = Number(messageId);
+      if (typeof content !== 'string' || !content.trim() || content.length > 2000) {
+        socket.emit('error:message', 'Mensaje invalido.');
+        return;
+      }
+      if (!currentRooms.has(roomId)) return;
+
+      const message = editMessage(messageId, socket.user.id, content.trim());
+      if (!message) {
+        socket.emit('error:message', 'No se pudo editar el mensaje.');
+        return;
+      }
+      io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
+    });
+
+    safeOn(socket, 'message:delete', ({ roomId, messageId }) => {
+      roomId = Number(roomId);
+      messageId = Number(messageId);
+      if (!currentRooms.has(roomId)) return;
+
+      const message = deleteMessage(messageId, socket.user.id);
+      if (!message) {
+        socket.emit('error:message', 'No se pudo eliminar el mensaje.');
+        return;
+      }
+      io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
+    });
+
+    safeOn(socket, 'message:reaction', ({ roomId, messageId, emoji }) => {
+      roomId = Number(roomId);
+      messageId = Number(messageId);
+      if (!ALLOWED_EMOJIS.has(emoji) || !currentRooms.has(roomId)) return;
+
+      const message = toggleReaction(messageId, socket.user.id, socket.user.username, emoji);
+      if (!message) return;
+      io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
+    });
+
+    safeOn(socket, 'typing', ({ roomId, isTyping }) => {
       roomId = Number(roomId);
       if (!currentRooms.has(roomId)) return;
       socket.to(`room:${roomId}`).emit('typing', {

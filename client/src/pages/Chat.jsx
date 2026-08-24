@@ -2,8 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../lib/api.js';
 import { connectSocket, getSocket } from '../lib/socket.js';
+import { playNotificationSound } from '../lib/sound.js';
 import RoomList from '../components/RoomList.jsx';
 import ChatWindow from '../components/ChatWindow.jsx';
+
+const PAGE_SIZE = 50;
+const BASE_TITLE = 'Chat Multisala';
 
 export default function Chat() {
   const { token, user, logout } = useAuth();
@@ -12,6 +16,9 @@ export default function Chat() {
   const [messagesByRoom, setMessagesByRoom] = useState({});
   const [presenceByRoom, setPresenceByRoom] = useState({});
   const [typingByRoom, setTypingByRoom] = useState({});
+  const [hasMoreByRoom, setHasMoreByRoom] = useState({});
+  const [loadingOlderByRoom, setLoadingOlderByRoom] = useState({});
+  const [unreadCount, setUnreadCount] = useState(0);
   const socketRef = useRef(null);
   const typingClearTimers = useRef({});
 
@@ -25,6 +32,18 @@ export default function Chat() {
         const existing = prev[roomId] || [];
         if (existing.some((m) => m.id === message.id)) return prev;
         return { ...prev, [roomId]: [...existing, message] };
+      });
+
+      if (message.username !== user.username && document.hidden) {
+        setUnreadCount((c) => c + 1);
+        playNotificationSound();
+      }
+    }
+
+    function onMessageUpdated({ roomId, message }) {
+      setMessagesByRoom((prev) => {
+        const existing = prev[roomId] || [];
+        return { ...prev, [roomId]: existing.map((m) => (m.id === message.id ? message : m)) };
       });
     }
 
@@ -57,18 +76,42 @@ export default function Chat() {
       console.error('Socket error:', msg);
     }
 
+    function onConnectError(err) {
+      // The token was rejected (expired, or the user no longer exists) —
+      // force a clean re-login instead of leaving a dead connection around.
+      console.error('Socket connect_error:', err.message);
+      logout();
+    }
+
     socket.on('message:new', onMessageNew);
+    socket.on('message:updated', onMessageUpdated);
     socket.on('room:presence', onPresence);
     socket.on('typing', onTyping);
     socket.on('error:message', onErrorMessage);
+    socket.on('connect_error', onConnectError);
 
     return () => {
       socket.off('message:new', onMessageNew);
+      socket.off('message:updated', onMessageUpdated);
       socket.off('room:presence', onPresence);
       socket.off('typing', onTyping);
       socket.off('error:message', onErrorMessage);
+      socket.off('connect_error', onConnectError);
     };
-  }, [token]);
+  }, [token, user.username, logout]);
+
+  // Reflect unread messages in the tab title while the window is hidden.
+  useEffect(() => {
+    document.title = unreadCount > 0 ? `(${unreadCount}) ${BASE_TITLE}` : BASE_TITLE;
+  }, [unreadCount]);
+
+  useEffect(() => {
+    function handleVisibility() {
+      if (!document.hidden) setUnreadCount(0);
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
 
   // Load the room list once.
   useEffect(() => {
@@ -91,6 +134,7 @@ export default function Chat() {
       .getMessages(token, activeRoomId)
       .then(({ messages }) => {
         setMessagesByRoom((prev) => ({ ...prev, [activeRoomId]: messages }));
+        setHasMoreByRoom((prev) => ({ ...prev, [activeRoomId]: messages.length === PAGE_SIZE }));
       })
       .catch((err) => console.error(err));
 
@@ -100,6 +144,28 @@ export default function Chat() {
       socket.emit('room:leave', activeRoomId);
     };
   }, [activeRoomId, token]);
+
+  async function handleLoadOlder() {
+    if (!activeRoomId) return;
+    const roomMessages = messagesByRoom[activeRoomId] || [];
+    const oldest = roomMessages[0];
+    if (!oldest) return;
+
+    setLoadingOlderByRoom((prev) => ({ ...prev, [activeRoomId]: true }));
+    try {
+      const { messages: older } = await api.getMessages(token, activeRoomId, oldest.created_at);
+      setMessagesByRoom((prev) => {
+        const existingIds = new Set((prev[activeRoomId] || []).map((m) => m.id));
+        const merged = [...older.filter((m) => !existingIds.has(m.id)), ...(prev[activeRoomId] || [])];
+        return { ...prev, [activeRoomId]: merged };
+      });
+      setHasMoreByRoom((prev) => ({ ...prev, [activeRoomId]: older.length === PAGE_SIZE }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingOlderByRoom((prev) => ({ ...prev, [activeRoomId]: false }));
+    }
+  }
 
   async function handleCreateRoom(name) {
     const { room } = await api.createRoom(token, name);
@@ -113,6 +179,19 @@ export default function Chat() {
 
   function handleTyping(isTyping) {
     socketRef.current?.emit('typing', { roomId: activeRoomId, isTyping });
+  }
+
+  function handleEditMessage(messageId, content) {
+    socketRef.current?.emit('message:edit', { roomId: activeRoomId, messageId, content });
+  }
+
+  function handleDeleteMessage(messageId) {
+    if (!window.confirm('¿Eliminar este mensaje?')) return;
+    socketRef.current?.emit('message:delete', { roomId: activeRoomId, messageId });
+  }
+
+  function handleReact(messageId, emoji) {
+    socketRef.current?.emit('message:reaction', { roomId: activeRoomId, messageId, emoji });
   }
 
   const activeRoom = rooms.find((r) => r.id === activeRoomId) || null;
@@ -139,8 +218,14 @@ export default function Chat() {
           currentUsername={user.username}
           users={users}
           typingUsers={typingUsers}
+          hasMore={!!hasMoreByRoom[activeRoomId]}
+          loadingOlder={!!loadingOlderByRoom[activeRoomId]}
+          onLoadOlder={handleLoadOlder}
           onSend={handleSend}
           onTyping={handleTyping}
+          onEdit={handleEditMessage}
+          onDelete={handleDeleteMessage}
+          onReact={handleReact}
         />
       </div>
     </div>

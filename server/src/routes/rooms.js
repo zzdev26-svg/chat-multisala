@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
+import { getMessagesForRoom } from '../db/messages.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -40,23 +41,8 @@ router.get('/:id/messages', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Sala no encontrada.' });
   }
 
-  const messages = before
-    ? db
-        .prepare(
-          `SELECT id, user_id, username, content, created_at FROM messages
-           WHERE room_id = ? AND created_at < ?
-           ORDER BY created_at DESC LIMIT ?`
-        )
-        .all(roomId, before, limit)
-    : db
-        .prepare(
-          `SELECT id, user_id, username, content, created_at FROM messages
-           WHERE room_id = ?
-           ORDER BY created_at DESC LIMIT ?`
-        )
-        .all(roomId, limit);
-
-  res.json({ messages: messages.reverse() });
+  const messages = getMessagesForRoom(roomId, { before, limit });
+  res.json({ messages });
 });
 
 export default router;
