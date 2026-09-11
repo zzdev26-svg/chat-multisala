@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function RoomList({ rooms, activeRoomId, onSelect, onCreateRoom }) {
+export default function RoomList({ rooms, dmRooms, openRoomIds, unreadRoomIds, onToggleRoom, onCreateRoom }) {
   const [newRoomName, setNewRoomName] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
@@ -23,17 +23,19 @@ export default function RoomList({ rooms, activeRoomId, onSelect, onCreateRoom }
   return (
     <aside className="room-list">
       <h2>Salas</h2>
+      <p className="room-list-hint">Elegi una o varias para chatear al mismo tiempo.</p>
       <ul>
-        {rooms.map((room) => (
-          <li key={room.id}>
-            <button
-              className={room.id === activeRoomId ? 'room-item active' : 'room-item'}
-              onClick={() => onSelect(room.id)}
-            >
-              # {room.name}
-            </button>
-          </li>
-        ))}
+        {rooms.map((room) => {
+          const isOpen = openRoomIds.includes(room.id);
+          return (
+            <li key={room.id}>
+              <label className={isOpen ? 'room-item open' : 'room-item'}>
+                <input type="checkbox" checked={isOpen} onChange={() => onToggleRoom(room.id)} /># {room.name}
+                {unreadRoomIds.has(room.id) && <span className="unread-dot" title="Mensajes nuevos" />}
+              </label>
+            </li>
+          );
+        })}
       </ul>
 
       <form onSubmit={handleCreate} className="create-room-form">
@@ -48,6 +50,25 @@ export default function RoomList({ rooms, activeRoomId, onSelect, onCreateRoom }
         </button>
       </form>
       {error && <p className="auth-error small">{error}</p>}
+
+      {dmRooms.length > 0 && (
+        <>
+          <h2 className="room-list-section">Mensajes directos</h2>
+          <ul>
+            {dmRooms.map((room) => {
+              const isOpen = openRoomIds.includes(room.id);
+              return (
+                <li key={room.id}>
+                  <label className={isOpen ? 'room-item open' : 'room-item'}>
+                    <input type="checkbox" checked={isOpen} onChange={() => onToggleRoom(room.id)} />@ {room.name}
+                    {unreadRoomIds.has(room.id) && <span className="unread-dot" title="Mensajes nuevos" />}
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
     </aside>
   );
 }

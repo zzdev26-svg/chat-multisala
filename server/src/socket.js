@@ -1,11 +1,18 @@
 import { db } from './db/index.js';
 import { insertMessage, editMessage, deleteMessage, toggleReaction } from './db/messages.js';
+import { isDmMember, listDmRoomIdsForUser } from './db/rooms.js';
 import { verifyToken } from './utils/jwt.js';
 
 const ALLOWED_EMOJIS = new Set(['👍', '❤️', '😂', '😮', '😢', '🎉']);
 
 // roomId -> Map<socketId, { id, username, isGuest }>
 const roomPresence = new Map();
+
+// userId -> Set<socketId>, so a REST endpoint (e.g. "start a DM") can reach
+// a user's live connections without going through a room.
+const userSockets = new Map();
+
+let io = null;
 
 function getRoomUsers(roomId) {
   const map = roomPresence.get(roomId);
@@ -45,7 +52,9 @@ function safeOn(socket, event, handler) {
   });
 }
 
-export function registerSocketHandlers(io) {
+export function registerSocketHandlers(server) {
+  io = server;
+
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('No autenticado'));
@@ -66,12 +75,32 @@ export function registerSocketHandlers(io) {
 
   io.on('connection', (socket) => {
     const currentRooms = new Set();
+    // Exposed on the socket so notifyUserOfNewDm (called from the REST
+    // layer, outside this closure) can add a freshly-created DM room to it.
+    socket.data.currentRooms = currentRooms;
+
+    if (!userSockets.has(socket.user.id)) userSockets.set(socket.user.id, new Set());
+    userSockets.get(socket.user.id).add(socket.id);
+
+    // DMs are always "live" for their two participants — join every DM room
+    // this user belongs to right away, independent of which panels their
+    // client happens to have open. That's what lets a message (or the
+    // unread indicator for it) reach them without opening that chat first.
+    for (const roomId of listDmRoomIdsForUser(socket.user.id)) {
+      socket.join(`room:${roomId}`);
+      currentRooms.add(roomId);
+      addPresence(roomId, socket.id, socket.user);
+    }
 
     safeOn(socket, 'room:join', (roomId) => {
       roomId = Number(roomId);
-      const room = db.prepare('SELECT id, name FROM rooms WHERE id = ?').get(roomId);
+      const room = db.prepare('SELECT id, name, is_dm FROM rooms WHERE id = ?').get(roomId);
       if (!room) {
         socket.emit('error:message', 'Sala no encontrada.');
+        return;
+      }
+      if (room.is_dm && !isDmMember(roomId, socket.user.id)) {
+        socket.emit('error:message', 'No tenes acceso a este chat privado.');
         return;
       }
 
@@ -88,6 +117,13 @@ export function registerSocketHandlers(io) {
 
     safeOn(socket, 'room:leave', (roomId) => {
       roomId = Number(roomId);
+      // DM membership isn't a UI concern: a participant stays "in" a private
+      // chat for as long as they're connected, so closing that panel must
+      // not stop messages from arriving (that's what makes the unread
+      // indicator on an unopened DM possible).
+      const room = db.prepare('SELECT is_dm FROM rooms WHERE id = ?').get(roomId);
+      if (room?.is_dm) return;
+
       socket.leave(`room:${roomId}`);
       currentRooms.delete(roomId);
       removePresence(roomId, socket.id);
@@ -163,6 +199,12 @@ export function registerSocketHandlers(io) {
     });
 
     socket.on('disconnect', () => {
+      const sockets = userSockets.get(socket.user.id);
+      if (sockets) {
+        sockets.delete(socket.id);
+        if (sockets.size === 0) userSockets.delete(socket.user.id);
+      }
+
       for (const roomId of currentRooms) {
         removePresence(roomId, socket.id);
         io.to(`room:${roomId}`).emit('room:presence', {
@@ -172,4 +214,28 @@ export function registerSocketHandlers(io) {
       }
     });
   });
+}
+
+// Called from the REST layer right after a brand-new DM room is created.
+// Pushes it live to the *other* participant if they're currently connected:
+// joins their socket(s) to the room and lets their UI add it to the "Mensajes
+// directos" list with an unread marker, with no page reload required.
+export function notifyUserOfNewDm(targetUserId, room, senderInfo) {
+  const socketIds = userSockets.get(targetUserId);
+  if (!socketIds || !io) return;
+
+  for (const socketId of socketIds) {
+    const socket = io.sockets.sockets.get(socketId);
+    if (!socket) continue;
+
+    socket.join(`room:${room.id}`);
+    socket.data.currentRooms?.add(room.id);
+    addPresence(room.id, socketId, socket.user);
+
+    socket.emit('dm:new', {
+      room: { id: room.id, otherUsername: senderInfo.username, otherIsGuest: !!senderInfo.isGuest },
+    });
+  }
+
+  io.to(`room:${room.id}`).emit('room:presence', { roomId: room.id, users: getRoomUsers(room.id) });
 }

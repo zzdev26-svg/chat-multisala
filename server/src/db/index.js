@@ -26,8 +26,21 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    is_dm INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Membership for DM rooms (is_dm = 1): the two participants of a private
+  -- 1-to-1 chat. Public rooms don't use this table — anyone can join those.
+  CREATE TABLE IF NOT EXISTS room_members (
+    room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (room_id, user_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_room_members_user
+    ON room_members(user_id);
 
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,6 +79,7 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn('messages', 'edited_at', 'TEXT');
 ensureColumn('messages', 'deleted_at', 'TEXT');
+ensureColumn('rooms', 'is_dm', 'INTEGER NOT NULL DEFAULT 0');
 
 // Seed a couple of default public rooms if none exist yet.
 const roomCount = db.prepare('SELECT COUNT(*) AS count FROM rooms').get().count;

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Avatar from './Avatar.jsx';
 import MessageInput from './MessageInput.jsx';
 import MessageItem from './MessageItem.jsx';
 
@@ -16,11 +17,14 @@ export default function ChatWindow({
   onEdit,
   onDelete,
   onReact,
+  onClose,
+  onSelectUser,
 }) {
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
   const shouldStickToBottom = useRef(true);
   const prevScrollHeight = useRef(0);
+  const [showMembers, setShowMembers] = useState(false);
 
   useEffect(() => {
     if (shouldStickToBottom.current) {
@@ -47,40 +51,80 @@ export default function ChatWindow({
     }
   }
 
-  if (!room) {
-    return <div className="chat-window empty">Elegi una sala para empezar a chatear.</div>;
-  }
+  if (!room) return null;
 
   return (
     <div className="chat-window">
       <header className="chat-header">
-        <h2># {room.name}</h2>
-        <span className="presence">
-          {users.length} conectado{users.length !== 1 ? 's' : ''}: {users.map((u) => u.username).join(', ') || '-'}
-        </span>
+        <h2>
+          {room.isDm ? '@' : '#'} {room.name}
+        </h2>
+        {!room.isDm && (
+          <button
+            type="button"
+            className={showMembers ? 'members-toggle-btn open' : 'members-toggle-btn'}
+            title="Ver conectados"
+            onClick={() => setShowMembers((v) => !v)}
+          >
+            👥 {users.length}
+          </button>
+        )}
+        <button type="button" className="panel-close-btn" title="Cerrar sala" onClick={onClose}>
+          ×
+        </button>
       </header>
 
-      <div className="messages" ref={containerRef} onScroll={handleScroll}>
-        {loadingOlder && <div className="loading-older">Cargando mensajes anteriores...</div>}
-        {messages.map((m) => (
-          <MessageItem
-            key={m.id}
-            message={m}
-            isOwn={m.username === currentUsername}
-            currentUsername={currentUsername}
-            onEdit={onEdit}
-            onDelete={onDelete}
-            onReact={onReact}
-          />
-        ))}
-        <div ref={bottomRef} />
-      </div>
+      <div className="chat-window-body">
+        <div className="chat-main">
+          <div className="messages" ref={containerRef} onScroll={handleScroll}>
+            {loadingOlder && <div className="loading-older">Cargando mensajes anteriores...</div>}
+            {messages.map((m) => (
+              <MessageItem
+                key={m.id}
+                message={m}
+                isOwn={m.username === currentUsername}
+                currentUsername={currentUsername}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onReact={onReact}
+              />
+            ))}
+            <div ref={bottomRef} />
+          </div>
 
-      <div className="typing-indicator">
-        {typingUsers.length > 0 && `${typingUsers.join(', ')} escribiendo...`}
-      </div>
+          <div className="typing-indicator">
+            {typingUsers.length > 0 && `${typingUsers.join(', ')} escribiendo...`}
+          </div>
 
-      <MessageInput onSend={onSend} onTyping={onTyping} />
+          <MessageInput onSend={onSend} onTyping={onTyping} />
+        </div>
+
+        {!room.isDm && showMembers && (
+          <aside className="members-panel">
+            <h3>Conectados ({users.length})</h3>
+            {users.length === 0 && <p className="members-empty">Nadie mas por aca todavia.</p>}
+            <ul>
+              {users.map((u) => (
+                <li key={u.username} className="member-row">
+                  <Avatar username={u.username} size={24} />
+                  {u.username === currentUsername ? (
+                    <span className="member-name">{u.username} (vos)</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="member-name member-name-btn"
+                      title={`Chatear en privado con ${u.username}`}
+                      onClick={() => onSelectUser(u.username)}
+                    >
+                      {u.username}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </aside>
+        )}
+      </div>
     </div>
   );
 }

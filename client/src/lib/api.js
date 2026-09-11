@@ -25,6 +25,8 @@ export const api = {
   guest: (username) => request('/api/auth/guest', { method: 'POST', body: { username } }),
   listRooms: (token) => request('/api/rooms', { token }),
   createRoom: (token, name) => request('/api/rooms', { method: 'POST', body: { name }, token }),
+  listDmRooms: (token) => request('/api/rooms/dm', { token }),
+  startDm: (token, username) => request('/api/rooms/dm', { method: 'POST', body: { username }, token }),
   getMessages: (token, roomId, before) =>
     request(`/api/rooms/${roomId}/messages${before ? `?before=${encodeURIComponent(before)}` : ''}`, {
       token,
