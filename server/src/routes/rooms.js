@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { getMessagesForRoom } from '../db/messages.js';
 import { findUserByUsername, getOrCreateDmRoom, isDmMember, listDmRoomsForUser } from '../db/rooms.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { notifyUserOfNewDm } from '../socket.js';
 
 const router = Router();
@@ -15,7 +15,7 @@ router.get('/', requireAuth, (req, res) => {
   res.json({ rooms });
 });
 
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireAuth, requireAdmin, (req, res) => {
   const { name } = req.body || {};
   if (typeof name !== 'string' || !ROOM_NAME_RE.test(name.trim())) {
     return res.status(400).json({ error: 'Nombre de sala invalido (2-30 caracteres).' });

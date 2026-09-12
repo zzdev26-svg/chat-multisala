@@ -28,12 +28,18 @@ router.post('/register', (req, res) => {
     return res.status(409).json({ error: 'Ese usuario ya existe.' });
   }
 
+  // Bootstrap: the very first real (non-guest) account becomes admin, so
+  // there's always someone who can create rooms without touching the DB
+  // by hand. Everyone after that starts as a regular user.
+  const hasRealUser = db.prepare('SELECT 1 FROM users WHERE is_guest = 0').get();
+  const role = hasRealUser ? 'user' : 'admin';
+
   const passwordHash = bcrypt.hashSync(password, 10);
   const info = db
-    .prepare('INSERT INTO users (username, password_hash, is_guest) VALUES (?, ?, 0)')
-    .run(username, passwordHash);
+    .prepare('INSERT INTO users (username, password_hash, is_guest, role) VALUES (?, ?, 0, ?)')
+    .run(username, passwordHash, role);
 
-  const user = { id: info.lastInsertRowid, username, isGuest: false };
+  const user = { id: info.lastInsertRowid, username, isGuest: false, isAdmin: role === 'admin' };
   const token = signToken(user);
   res.status(201).json({ token, user });
 });
@@ -55,7 +61,7 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Usuario o contrasena incorrectos.' });
   }
 
-  const user = { id: row.id, username: row.username, isGuest: false };
+  const user = { id: row.id, username: row.username, isGuest: false, isAdmin: row.role === 'admin' };
   const token = signToken(user);
   res.json({ token, user });
 });
@@ -64,7 +70,7 @@ router.post('/guest', (req, res) => {
   let { username } = req.body || {};
 
   if (typeof username !== 'string' || !username.trim()) {
-    username = `Invitado-${nanoid()}`;
+    username = `Invitado_${nanoid()}`;
   }
   username = username.trim().slice(0, 20).replace(/\s+/g, '_');
 
@@ -78,7 +84,7 @@ router.post('/guest', (req, res) => {
   let finalUsername = username;
   let attempts = 0;
   while (findUserByUsername(finalUsername) && attempts < 5) {
-    finalUsername = `${username}-${nanoid()}`.slice(0, 20);
+    finalUsername = `${username}_${nanoid()}`.slice(0, 20);
     attempts += 1;
   }
   if (findUserByUsername(finalUsername)) {
@@ -89,7 +95,8 @@ router.post('/guest', (req, res) => {
     .prepare('INSERT INTO users (username, password_hash, is_guest) VALUES (?, NULL, 1)')
     .run(finalUsername);
 
-  const user = { id: info.lastInsertRowid, username: finalUsername, isGuest: true };
+  // Guests are always plain users — never eligible for the admin bootstrap.
+  const user = { id: info.lastInsertRowid, username: finalUsername, isGuest: true, isAdmin: false };
   const token = signToken(user);
   res.status(201).json({ token, user });
 });

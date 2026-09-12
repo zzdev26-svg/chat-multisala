@@ -19,6 +19,7 @@ db.exec(`
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT,
     is_guest INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL DEFAULT 'user',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -80,6 +81,7 @@ function ensureColumn(table, column, definition) {
 ensureColumn('messages', 'edited_at', 'TEXT');
 ensureColumn('messages', 'deleted_at', 'TEXT');
 ensureColumn('rooms', 'is_dm', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'user'");
 
 // Seed a couple of default public rooms if none exist yet.
 const roomCount = db.prepare('SELECT COUNT(*) AS count FROM rooms').get().count;
@@ -87,6 +89,20 @@ if (roomCount === 0) {
   const insertRoom = db.prepare('INSERT INTO rooms (name) VALUES (?)');
   insertRoom.run('General');
   insertRoom.run('Random');
+}
+
+// Make sure there's always someone who can create rooms: if no admin exists
+// yet (fresh install, or a DB from before roles existed), promote whoever
+// registered first. New installs additionally get an admin right away on
+// their very first real registration — see routes/auth.js.
+const hasAdmin = db.prepare("SELECT 1 FROM users WHERE role = 'admin'").get();
+if (!hasAdmin) {
+  const firstRealUser = db
+    .prepare('SELECT id FROM users WHERE is_guest = 0 ORDER BY created_at ASC, id ASC LIMIT 1')
+    .get();
+  if (firstRealUser) {
+    db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(firstRealUser.id);
+  }
 }
 
 export default db;

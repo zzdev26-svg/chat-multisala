@@ -314,6 +314,7 @@ export default function Chat() {
         <span>
           Conectado como <strong>{user.username}</strong>
           {user.isGuest ? ' (invitado)' : ''}
+          {user.isAdmin ? ' (admin)' : ''}
         </span>
         <button className="logout-btn" onClick={logout}>
           Salir
@@ -325,6 +326,7 @@ export default function Chat() {
           dmRooms={dmRooms}
           openRoomIds={openRoomIds}
           unreadRoomIds={unreadRoomIds}
+          canCreateRoom={!!user.isAdmin}
           onToggleRoom={handleToggleRoom}
           onCreateRoom={handleCreateRoom}
         />
