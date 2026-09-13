@@ -1,0 +1,6 @@
+# La app (salas, mensajes, videollamada) es contenido privado de usuarios
+# autenticados, no material de marketing. No debe indexarse nunca.
+# La landing publica (carpeta /landing en el repo) tiene su propio robots.txt
+# permitiendo su indexacion.
+User-agent: *
+Disallow: /

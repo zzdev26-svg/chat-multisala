@@ -1,0 +1,166 @@
+:root {
+  --bg: #0f1115;
+  --panel: #161922;
+  --panel-alt: #1e2230;
+  --border: #2a2f3d;
+  --text: #e7e9ee;
+  --text-dim: #9aa1b2;
+  --accent: #6c8cff;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+a {
+  color: inherit;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 800;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+
+.hero {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 3rem;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+  margin: 0 0 1rem;
+  line-height: 1.2;
+}
+
+.lead {
+  color: var(--text-dim);
+  font-size: 1.05rem;
+  margin: 0 0 2rem;
+}
+
+.cta-row {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.cta {
+  display: inline-block;
+  background: var(--accent);
+  color: white;
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0.75rem 1.4rem;
+  border-radius: 8px;
+}
+
+.cta-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.cta-small {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.age-notice {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.features {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+.features h2 {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.25rem;
+}
+
+.feature {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.feature h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.feature p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.cta-final {
+  text-align: center;
+  padding: 3rem 1.5rem 4rem;
+  border-top: 1px solid var(--border);
+}
+
+footer {
+  border-top: 1px solid var(--border);
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 1.25rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.footer-links a {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.footer-links a:hover {
+  color: var(--text);
+}
+
+.footer-note {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  margin: 0;
+}
