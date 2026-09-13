@@ -2,12 +2,14 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { customAlphabet } from 'nanoid';
 import { db } from '../db/index.js';
+import { requireAuth } from '../middleware/auth.js';
 import { signToken } from '../utils/jwt.js';
 
 const router = Router();
 const nanoid = customAlphabet('0123456789', 4);
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
 function findUserByUsername(username) {
   return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
@@ -39,7 +41,14 @@ router.post('/register', (req, res) => {
     .prepare('INSERT INTO users (username, password_hash, is_guest, role) VALUES (?, ?, 0, ?)')
     .run(username, passwordHash, role);
 
-  const user = { id: info.lastInsertRowid, username, isGuest: false, isAdmin: role === 'admin' };
+  const user = {
+    id: info.lastInsertRowid,
+    username,
+    isGuest: false,
+    isAdmin: role === 'admin',
+    textColor: null,
+    bgColor: null,
+  };
   const token = signToken(user);
   res.status(201).json({ token, user });
 });
@@ -61,7 +70,14 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Usuario o contrasena incorrectos.' });
   }
 
-  const user = { id: row.id, username: row.username, isGuest: false, isAdmin: row.role === 'admin' };
+  const user = {
+    id: row.id,
+    username: row.username,
+    isGuest: false,
+    isAdmin: row.role === 'admin',
+    textColor: row.text_color,
+    bgColor: row.bg_color,
+  };
   const token = signToken(user);
   res.json({ token, user });
 });
@@ -96,9 +112,43 @@ router.post('/guest', (req, res) => {
     .run(finalUsername);
 
   // Guests are always plain users — never eligible for the admin bootstrap.
-  const user = { id: info.lastInsertRowid, username: finalUsername, isGuest: true, isAdmin: false };
+  const user = {
+    id: info.lastInsertRowid,
+    username: finalUsername,
+    isGuest: true,
+    isAdmin: false,
+    textColor: null,
+    bgColor: null,
+  };
   const token = signToken(user);
   res.status(201).json({ token, user });
+});
+
+// Personalize the color of your own messages, applied everywhere you chat.
+// Pass null for either field to reset it back to the default theme color.
+router.patch('/me', requireAuth, (req, res) => {
+  const { textColor, bgColor } = req.body || {};
+
+  if (textColor !== null && !HEX_COLOR_RE.test(textColor || '')) {
+    return res.status(400).json({ error: 'Color de texto invalido (formato #rrggbb).' });
+  }
+  if (bgColor !== null && !HEX_COLOR_RE.test(bgColor || '')) {
+    return res.status(400).json({ error: 'Color de fondo invalido (formato #rrggbb).' });
+  }
+
+  db.prepare('UPDATE users SET text_color = ?, bg_color = ? WHERE id = ?').run(textColor, bgColor, req.user.id);
+
+  const row = db.prepare('SELECT id, username, is_guest, role, text_color, bg_color FROM users WHERE id = ?').get(req.user.id);
+  res.json({
+    user: {
+      id: row.id,
+      username: row.username,
+      isGuest: !!row.is_guest,
+      isAdmin: row.role === 'admin',
+      textColor: row.text_color,
+      bgColor: row.bg_color,
+    },
+  });
 });
 
 export default router;

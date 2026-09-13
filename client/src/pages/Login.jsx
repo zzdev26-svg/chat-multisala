@@ -4,13 +4,13 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const TABS = [
+  { key: 'guest', label: 'Entrar como invitado' },
   { key: 'login', label: 'Ingresar' },
   { key: 'register', label: 'Crear cuenta' },
-  { key: 'guest', label: 'Entrar como invitado' },
 ];
 
 export default function Login() {
-  const [tab, setTab] = useState('login');
+  const [tab, setTab] = useState('guest');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');

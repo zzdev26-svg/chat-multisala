@@ -23,6 +23,8 @@ export const api = {
   login: (username, password) =>
     request('/api/auth/login', { method: 'POST', body: { username, password } }),
   guest: (username) => request('/api/auth/guest', { method: 'POST', body: { username } }),
+  updateColor: (token, { textColor, bgColor }) =>
+    request('/api/auth/me', { method: 'PATCH', body: { textColor, bgColor }, token }),
   listRooms: (token) => request('/api/rooms', { token }),
   createRoom: (token, name) => request('/api/rooms', { method: 'POST', body: { name }, token }),
   listDmRooms: (token) => request('/api/rooms/dm', { token }),

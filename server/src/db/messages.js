@@ -1,6 +1,7 @@
 import { db } from './index.js';
 
-const MESSAGE_COLUMNS = 'id, room_id, user_id, username, content, created_at, edited_at, deleted_at';
+const MESSAGE_COLUMNS =
+  'id, room_id, user_id, username, content, created_at, edited_at, deleted_at, text_color, bg_color';
 
 function attachReactions(messages) {
   if (messages.length === 0) return messages;
@@ -54,10 +55,13 @@ export function getMessageById(id) {
   return attachReactions([row])[0];
 }
 
-export function insertMessage(roomId, userId, username, content) {
+// textColor/bgColor are captured from the sender's profile at send time and
+// stored directly on the row — same denormalization already used for
+// `username`, so a later color (or username) change doesn't rewrite history.
+export function insertMessage(roomId, userId, username, content, { textColor = null, bgColor = null } = {}) {
   const info = db
-    .prepare('INSERT INTO messages (room_id, user_id, username, content) VALUES (?, ?, ?, ?)')
-    .run(roomId, userId, username, content);
+    .prepare('INSERT INTO messages (room_id, user_id, username, content, text_color, bg_color) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(roomId, userId, username, content, textColor, bgColor);
   return getMessageById(info.lastInsertRowid);
 }
 

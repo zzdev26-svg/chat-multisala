@@ -20,6 +20,8 @@ db.exec(`
     password_hash TEXT,
     is_guest INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL DEFAULT 'user',
+    text_color TEXT,
+    bg_color TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -51,7 +53,9 @@ db.exec(`
     content TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     edited_at TEXT,
-    deleted_at TEXT
+    deleted_at TEXT,
+    text_color TEXT,
+    bg_color TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_messages_room_created
@@ -82,6 +86,10 @@ ensureColumn('messages', 'edited_at', 'TEXT');
 ensureColumn('messages', 'deleted_at', 'TEXT');
 ensureColumn('rooms', 'is_dm', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'user'");
+ensureColumn('users', 'text_color', 'TEXT');
+ensureColumn('users', 'bg_color', 'TEXT');
+ensureColumn('messages', 'text_color', 'TEXT');
+ensureColumn('messages', 'bg_color', 'TEXT');
 
 // Seed a couple of default public rooms if none exist yet.
 const roomCount = db.prepare('SELECT COUNT(*) AS count FROM rooms').get().count;

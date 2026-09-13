@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useCall } from '../hooks/useCall.js';
 import Avatar from './Avatar.jsx';
 import MessageInput from './MessageInput.jsx';
 import MessageItem from './MessageItem.jsx';
@@ -7,6 +8,7 @@ export default function ChatWindow({
   room,
   messages,
   currentUsername,
+  isAdmin,
   users,
   typingUsers,
   hasMore,
@@ -19,12 +21,14 @@ export default function ChatWindow({
   onReact,
   onClose,
   onSelectUser,
+  onKickUser,
 }) {
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
   const shouldStickToBottom = useRef(true);
   const prevScrollHeight = useRef(0);
   const [showMembers, setShowMembers] = useState(false);
+  const call = useCall(room?.id, !!room?.isDm);
 
   useEffect(() => {
     if (shouldStickToBottom.current) {
@@ -69,10 +73,66 @@ export default function ChatWindow({
             👥 {users.length}
           </button>
         )}
+        {room.isDm && call.status === 'idle' && (
+          <button type="button" className="members-toggle-btn" title="Llamar con camara" onClick={call.startCall}>
+            📹
+          </button>
+        )}
         <button type="button" className="panel-close-btn" title="Cerrar sala" onClick={onClose}>
           ×
         </button>
       </header>
+
+      {room.isDm && call.status !== 'idle' && (
+        <div className="call-panel">
+          {call.status === 'calling' && (
+            <div className="call-banner">
+              <span>Llamando a {room.name}...</span>
+              <button type="button" onClick={call.cancelCall}>
+                Cancelar
+              </button>
+            </div>
+          )}
+
+          {call.status === 'ringing' && (
+            <div className="call-banner">
+              <span>📹 {call.callerUsername} te esta llamando</span>
+              <div className="call-banner-actions">
+                <button type="button" className="call-accept-btn" onClick={call.acceptCall}>
+                  Aceptar
+                </button>
+                <button type="button" onClick={call.rejectCall}>
+                  Rechazar
+                </button>
+              </div>
+            </div>
+          )}
+
+          {call.status === 'in-call' && (
+            <div className="call-video-area">
+              <video ref={call.remoteVideoRef} className="remote-video" autoPlay playsInline />
+              <video ref={call.localVideoRef} className="local-video" autoPlay playsInline muted />
+              <div className="call-controls">
+                <button type="button" className="icon-btn" title={call.micOn ? 'Silenciar' : 'Activar microfono'} onClick={call.toggleMic}>
+                  {call.micOn ? '🎤' : '🔇'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={call.cameraOn ? 'Apagar camara' : 'Prender camara'}
+                  onClick={call.toggleCamera}
+                >
+                  {call.cameraOn ? '📷' : '🚫'}
+                </button>
+                <button type="button" className="call-hangup-btn" title="Colgar" onClick={call.endCall}>
+                  📴
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {room.isDm && call.error && <p className="call-error">{call.error}</p>}
 
       <div className="chat-window-body">
         <div className="chat-main">
@@ -117,6 +177,19 @@ export default function ChatWindow({
                       onClick={() => onSelectUser(u.username)}
                     >
                       {u.username}
+                    </button>
+                  )}
+                  {u.proximity && (
+                    <span className={`proximity-badge proximity-${u.proximity.bucket}`}>{u.proximity.label}</span>
+                  )}
+                  {isAdmin && u.username !== currentUsername && (
+                    <button
+                      type="button"
+                      className="icon-btn kick-btn"
+                      title={`Expulsar a ${u.username}`}
+                      onClick={() => onKickUser(u.username)}
+                    >
+                      🚫
                     </button>
                   )}
                 </li>

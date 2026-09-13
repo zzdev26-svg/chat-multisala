@@ -39,11 +39,19 @@ export default function MessageItem({ message, isOwn, currentUsername, onEdit, o
     }
   }
 
+  // The sender's chosen colors are stored on the message itself (denormalized
+  // like the username), so they render the same for everyone regardless of
+  // whether the sender later changes their profile color.
+  const customStyle =
+    message.text_color || message.bg_color
+      ? { color: message.text_color || undefined, background: message.bg_color || undefined }
+      : undefined;
+
   return (
     <div className={isOwn ? 'message-row own' : 'message-row'}>
       {!isOwn && <Avatar username={message.username} />}
 
-      <div className={isOwn ? 'message own' : 'message'}>
+      <div className={isOwn ? 'message own' : 'message'} style={customStyle}>
         <div className="message-meta">
           <span className="message-author">{message.username}</span>
           <span className="message-time">{formatTime(message.created_at)}</span>

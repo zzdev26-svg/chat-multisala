@@ -5,12 +5,19 @@ import { connectSocket, getSocket } from '../lib/socket.js';
 import { playNotificationSound } from '../lib/sound.js';
 import RoomList from '../components/RoomList.jsx';
 import ChatWindow from '../components/ChatWindow.jsx';
+import ColorSettings from '../components/ColorSettings.jsx';
+import LocationToggle from '../components/LocationToggle.jsx';
 
 const PAGE_SIZE = 50;
 const BASE_TITLE = 'Chat Multisala';
+const LOCATION_REFRESH_MS = 3 * 60 * 1000;
 
 function openRoomsStorageKey(username) {
   return `chat-multisala:open-rooms:${username}`;
+}
+
+function locationPrefKey(username) {
+  return `chat-multisala:location-enabled:${username}`;
 }
 
 function loadStoredOpenRooms(username) {
@@ -24,7 +31,7 @@ function loadStoredOpenRooms(username) {
 }
 
 export default function Chat() {
-  const { token, user, logout } = useAuth();
+  const { token, user, logout, updateUser } = useAuth();
   const [rooms, setRooms] = useState([]);
   // Private 1-to-1 chats, normalized to the same { id, name } shape as
   // public rooms (name = the other participant's username) so they can
@@ -43,6 +50,13 @@ export default function Chat() {
   // Rooms/DMs with a message that arrived while their panel wasn't open —
   // shown as a dot in the sidebar until the user opens that room.
   const [unreadRoomIds, setUnreadRoomIds] = useState(new Set());
+  // "Nearby users" opt-in: never persisted server-side, just an in-memory
+  // reading the server buckets into coarse proximity for other opted-in
+  // users (see socket.js) — nothing precise ever leaves the server.
+  const [locationEnabled, setLocationEnabled] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationError, setLocationError] = useState('');
+  const locationIntervalRef = useRef(null);
   const socketRef = useRef(null);
   const typingClearTimers = useRef({});
   const joinedRoomsRef = useRef(new Set());
@@ -118,6 +132,13 @@ export default function Chat() {
       }
     }
 
+    // An admin kicked us out of a room right now — close that panel too, so
+    // the UI doesn't keep showing a room our socket already left server-side.
+    function onKicked({ roomId, by }) {
+      setOpenRoomIds((prev) => prev.filter((id) => id !== roomId));
+      alert(`${by} te expulso de la sala.`);
+    }
+
     function onErrorMessage(msg) {
       console.error('Socket error:', msg);
     }
@@ -134,6 +155,7 @@ export default function Chat() {
     socket.on('room:presence', onPresence);
     socket.on('typing', onTyping);
     socket.on('dm:new', onDmNew);
+    socket.on('room:kicked', onKicked);
     socket.on('error:message', onErrorMessage);
     socket.on('connect_error', onConnectError);
 
@@ -143,6 +165,7 @@ export default function Chat() {
       socket.off('room:presence', onPresence);
       socket.off('typing', onTyping);
       socket.off('dm:new', onDmNew);
+      socket.off('room:kicked', onKicked);
       socket.off('error:message', onErrorMessage);
       socket.off('connect_error', onConnectError);
     };
@@ -195,6 +218,68 @@ export default function Chat() {
       return changed ? next : prev;
     });
   }, [openRoomIds]);
+
+  function captureAndSendLocation() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('unsupported'));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          socketRef.current?.emit('location:update', {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
+          resolve();
+        },
+        reject,
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
+      );
+    });
+  }
+
+  async function handleToggleLocation(next) {
+    if (!next) {
+      socketRef.current?.emit('location:disable');
+      clearInterval(locationIntervalRef.current);
+      locationIntervalRef.current = null;
+      setLocationEnabled(false);
+      setLocationError('');
+      localStorage.setItem(locationPrefKey(user.username), 'false');
+      return;
+    }
+
+    setLocationLoading(true);
+    setLocationError('');
+    try {
+      await captureAndSendLocation();
+      setLocationEnabled(true);
+      localStorage.setItem(locationPrefKey(user.username), 'true');
+      clearInterval(locationIntervalRef.current);
+      // Refresh periodically (not watchPosition) so proximity stays roughly
+      // current without draining the battery with continuous GPS updates.
+      locationIntervalRef.current = setInterval(() => {
+        captureAndSendLocation().catch((err) => console.error('No se pudo actualizar la ubicacion:', err));
+      }, LOCATION_REFRESH_MS);
+    } catch (err) {
+      setLocationError(err.code === 1 ? 'Denegaste el permiso de ubicacion.' : 'No se pudo obtener tu ubicacion.');
+    } finally {
+      setLocationLoading(false);
+    }
+  }
+
+  // Re-enable sharing on load if it was on last session (the browser won't
+  // re-prompt once permission was already granted). The server itself never
+  // remembers a location across a full disconnect — only the on/off intent
+  // is persisted, on this device.
+  useEffect(() => {
+    if (localStorage.getItem(locationPrefKey(user.username)) === 'true') {
+      handleToggleLocation(true);
+    }
+    return () => clearInterval(locationIntervalRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.username]);
 
   // Keep the socket joined to exactly the set of open rooms: join newly
   // opened ones (loading their history on first open), leave closed ones.
@@ -308,6 +393,16 @@ export default function Chat() {
     socketRef.current?.emit('message:reaction', { roomId, messageId, emoji });
   }
 
+  function handleKickUser(roomId, username) {
+    if (!window.confirm(`¿Expulsar a ${username} de la sala?`)) return;
+    socketRef.current?.emit('room:kick', { roomId, username });
+  }
+
+  async function handleUpdateColor({ textColor, bgColor }) {
+    const { user: updated } = await api.updateColor(token, { textColor, bgColor });
+    updateUser(updated);
+  }
+
   return (
     <div className="chat-layout">
       <div className="topbar">
@@ -316,9 +411,18 @@ export default function Chat() {
           {user.isGuest ? ' (invitado)' : ''}
           {user.isAdmin ? ' (admin)' : ''}
         </span>
-        <button className="logout-btn" onClick={logout}>
-          Salir
-        </button>
+        <div className="topbar-actions">
+          <LocationToggle
+            enabled={locationEnabled}
+            loading={locationLoading}
+            error={locationError}
+            onToggle={handleToggleLocation}
+          />
+          <ColorSettings user={user} onSave={handleUpdateColor} />
+          <button className="logout-btn" onClick={logout}>
+            Salir
+          </button>
+        </div>
       </div>
       <div className="chat-body">
         <RoomList
@@ -344,6 +448,7 @@ export default function Chat() {
                   room={room}
                   messages={messagesByRoom[roomId] || []}
                   currentUsername={user.username}
+                  isAdmin={!!user.isAdmin}
                   users={presenceByRoom[roomId] || []}
                   typingUsers={typingUsers}
                   hasMore={!!hasMoreByRoom[roomId]}
@@ -356,6 +461,7 @@ export default function Chat() {
                   onReact={(messageId, emoji) => handleReact(roomId, messageId, emoji)}
                   onClose={() => handleCloseRoom(roomId)}
                   onSelectUser={handleStartDm}
+                  onKickUser={(username) => handleKickUser(roomId, username)}
                 />
               );
             })}

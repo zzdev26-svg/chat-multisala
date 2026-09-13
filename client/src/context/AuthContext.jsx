@@ -30,6 +30,17 @@ export function AuthProvider({ children }) {
     disconnectSocket();
   }, []);
 
+  // Merges a partial user update (e.g. a new message color from the server)
+  // into the stored session, so it survives a reload without re-logging in.
+  const updateUser = useCallback((patch) => {
+    setAuth((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, user: { ...prev.user, ...patch } };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   const value = useMemo(
     () => ({
       token: auth?.token ?? null,
@@ -37,8 +48,9 @@ export function AuthProvider({ children }) {
       isAuthenticated: !!auth?.token,
       login,
       logout,
+      updateUser,
     }),
-    [auth, login, logout]
+    [auth, login, logout, updateUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -12,19 +12,80 @@ const roomPresence = new Map();
 // a user's live connections without going through a room.
 const userSockets = new Map();
 
+// userId -> { lat, lng }. In-memory only, opt-in, and never persisted to
+// disk — cleared the moment a user disables sharing or their last
+// connection drops. Nothing here is exposed to clients directly; only the
+// coarse bucket computed from it (see distanceBucket) ever leaves the
+// server, so two people opted in can't compare notes to triangulate a
+// precise location out of it.
+const userLocations = new Map();
+
 let io = null;
 
-function getRoomUsers(roomId) {
+// Approximate rings rather than a precise figure — a few readings from
+// different spots would otherwise let someone triangulate an exact
+// location out of "you are 2.35km from me" style numbers.
+const DISTANCE_BUCKETS = [
+  { max: 1, bucket: 0, label: 'Muy cerca' },
+  { max: 5, bucket: 1, label: 'Cerca' },
+  { max: 20, bucket: 2, label: 'En la zona' },
+  { max: Infinity, bucket: 3, label: 'Lejos' },
+];
+
+function distanceBucket(km) {
+  return DISTANCE_BUCKETS.find((b) => km < b.max);
+}
+
+function haversineKm(a, b) {
+  const R = 6371;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Personalized per viewer: proximity is only ever computed relative to the
+// *viewer's own* opted-in location, and only for other users who also
+// opted in. Nearest-first when the viewer has a location; otherwise
+// unaffected (no one gets sorted or badged).
+function getRoomUsers(roomId, viewerUserId) {
   const map = roomPresence.get(roomId);
   if (!map) return [];
+  const viewerLoc = viewerUserId != null ? userLocations.get(viewerUserId) : null;
+
   const seen = new Set();
   const users = [];
   for (const u of map.values()) {
     if (seen.has(u.username)) continue;
     seen.add(u.username);
-    users.push({ username: u.username, isGuest: u.isGuest });
+
+    let proximity = null;
+    if (viewerLoc && u.id !== viewerUserId) {
+      const targetLoc = userLocations.get(u.id);
+      if (targetLoc) {
+        const { bucket, label } = distanceBucket(haversineKm(viewerLoc, targetLoc));
+        proximity = { bucket, label };
+      }
+    }
+    users.push({ username: u.username, isGuest: u.isGuest, proximity });
   }
+
+  users.sort((a, b) => (a.proximity?.bucket ?? 99) - (b.proximity?.bucket ?? 99));
   return users;
+}
+
+// room:presence can't be a single shared broadcast once it's personalized —
+// each socket in the room gets its own view of who's near *them*.
+function broadcastPresence(roomId) {
+  const socketIds = io?.sockets.adapter.rooms.get(`room:${roomId}`);
+  if (!socketIds) return;
+  for (const socketId of socketIds) {
+    const sock = io.sockets.sockets.get(socketId);
+    if (!sock) continue;
+    sock.emit('room:presence', { roomId, users: getRoomUsers(roomId, sock.user.id) });
+  }
 }
 
 function addPresence(roomId, socketId, user) {
@@ -37,6 +98,10 @@ function removePresence(roomId, socketId) {
   if (!map) return;
   map.delete(socketId);
   if (map.size === 0) roomPresence.delete(roomId);
+}
+
+function isDmRoom(roomId) {
+  return !!db.prepare('SELECT is_dm FROM rooms WHERE id = ?').get(roomId)?.is_dm;
 }
 
 // Wraps a handler so a thrown/DB error never crashes the whole server —
@@ -109,10 +174,7 @@ export function registerSocketHandlers(server) {
       addPresence(roomId, socket.id, socket.user);
 
       socket.emit('room:joined', { roomId, room });
-      io.to(`room:${roomId}`).emit('room:presence', {
-        roomId,
-        users: getRoomUsers(roomId),
-      });
+      broadcastPresence(roomId);
     });
 
     safeOn(socket, 'room:leave', (roomId) => {
@@ -127,10 +189,7 @@ export function registerSocketHandlers(server) {
       socket.leave(`room:${roomId}`);
       currentRooms.delete(roomId);
       removePresence(roomId, socket.id);
-      io.to(`room:${roomId}`).emit('room:presence', {
-        roomId,
-        users: getRoomUsers(roomId),
-      });
+      broadcastPresence(roomId);
     });
 
     safeOn(socket, 'message:send', ({ roomId, content }) => {
@@ -144,7 +203,14 @@ export function registerSocketHandlers(server) {
         return;
       }
 
-      const message = insertMessage(roomId, socket.user.id, socket.user.username, content.trim());
+      // Read the sender's current color fresh from the DB (not a cached
+      // value on the socket) so a color change applies to the very next
+      // message without needing to reconnect.
+      const profile = db.prepare('SELECT text_color, bg_color FROM users WHERE id = ?').get(socket.user.id);
+      const message = insertMessage(roomId, socket.user.id, socket.user.username, content.trim(), {
+        textColor: profile?.text_color ?? null,
+        bgColor: profile?.bg_color ?? null,
+      });
       io.to(`room:${roomId}`).emit('message:new', { roomId, message });
     });
 
@@ -188,6 +254,39 @@ export function registerSocketHandlers(server) {
       io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
     });
 
+    // Admin-only, public rooms only: forces the target out of the room right
+    // now (closes their panel, drops their socket from the channel) — no
+    // ban, they're free to rejoin immediately, same as a Discord "kick".
+    safeOn(socket, 'room:kick', ({ roomId, username }) => {
+      roomId = Number(roomId);
+      const admin = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id);
+      if (admin?.role !== 'admin') {
+        socket.emit('error:message', 'Necesitas permisos de administrador para esto.');
+        return;
+      }
+
+      const room = db.prepare('SELECT is_dm FROM rooms WHERE id = ?').get(roomId);
+      if (!room || room.is_dm) return;
+
+      const map = roomPresence.get(roomId);
+      const targets = map ? [...map.entries()].filter(([, u]) => u.username === username) : [];
+      if (targets.length === 0) {
+        socket.emit('error:message', 'Ese usuario no esta en la sala.');
+        return;
+      }
+
+      for (const [socketId] of targets) {
+        const targetSocket = io.sockets.sockets.get(socketId);
+        if (!targetSocket) continue;
+        targetSocket.leave(`room:${roomId}`);
+        targetSocket.data.currentRooms?.delete(roomId);
+        removePresence(roomId, socketId);
+        targetSocket.emit('room:kicked', { roomId, by: socket.user.username });
+      }
+
+      broadcastPresence(roomId);
+    });
+
     safeOn(socket, 'typing', ({ roomId, isTyping }) => {
       roomId = Number(roomId);
       if (!currentRooms.has(roomId)) return;
@@ -198,19 +297,72 @@ export function registerSocketHandlers(server) {
       });
     });
 
+    // Opt-in "nearby users": share a fresh reading, or turn sharing off.
+    // Affects every room this socket is currently in, since proximity to
+    // everyone there just became knowable (or stopped being knowable).
+    safeOn(socket, 'location:update', ({ lat, lng } = {}) => {
+      if (typeof lat !== 'number' || typeof lng !== 'number' || Number.isNaN(lat) || Number.isNaN(lng)) return;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+      userLocations.set(socket.user.id, { lat, lng });
+      for (const roomId of currentRooms) broadcastPresence(roomId);
+    });
+
+    safeOn(socket, 'location:disable', () => {
+      userLocations.delete(socket.user.id);
+      for (const roomId of currentRooms) broadcastPresence(roomId);
+    });
+
+    // WebRTC camera-call signaling (DM rooms only — always exactly 2
+    // participants, so relaying to "the room" reaches only the other side).
+    // The server never looks inside the SDP/ICE payloads, it just forwards
+    // them between the two peers.
+    function safeOnCall(event, handler) {
+      safeOn(socket, event, (payload) => {
+        const roomId = Number(typeof payload === 'object' && payload !== null ? payload.roomId : payload);
+        if (!currentRooms.has(roomId) || !isDmRoom(roomId)) return;
+        handler(roomId, payload);
+      });
+    }
+
+    safeOnCall('call:invite', (roomId) => {
+      socket.to(`room:${roomId}`).emit('call:invite', { roomId, from: socket.user.username });
+    });
+
+    safeOnCall('call:accept', (roomId) => {
+      socket.to(`room:${roomId}`).emit('call:accept', { roomId, from: socket.user.username });
+    });
+
+    safeOnCall('call:reject', (roomId) => {
+      socket.to(`room:${roomId}`).emit('call:reject', { roomId, from: socket.user.username });
+    });
+
+    safeOnCall('call:end', (roomId) => {
+      socket.to(`room:${roomId}`).emit('call:end', { roomId, from: socket.user.username });
+    });
+
+    safeOnCall('call:signal', (roomId, { data }) => {
+      socket.to(`room:${roomId}`).emit('call:signal', { roomId, data, from: socket.user.username });
+    });
+
     socket.on('disconnect', () => {
       const sockets = userSockets.get(socket.user.id);
       if (sockets) {
         sockets.delete(socket.id);
-        if (sockets.size === 0) userSockets.delete(socket.user.id);
+        if (sockets.size === 0) {
+          userSockets.delete(socket.user.id);
+          // Only wipe the shared location once every tab/session for this
+          // user is gone — one tab closing shouldn't blind the others.
+          userLocations.delete(socket.user.id);
+        }
       }
 
       for (const roomId of currentRooms) {
         removePresence(roomId, socket.id);
-        io.to(`room:${roomId}`).emit('room:presence', {
-          roomId,
-          users: getRoomUsers(roomId),
-        });
+        broadcastPresence(roomId);
+        // Don't leave the other side hanging mid-call if we vanish.
+        if (isDmRoom(roomId)) {
+          socket.to(`room:${roomId}`).emit('call:end', { roomId, from: socket.user.username });
+        }
       }
     });
   });
@@ -237,5 +389,5 @@ export function notifyUserOfNewDm(targetUserId, room, senderInfo) {
     });
   }
 
-  io.to(`room:${room.id}`).emit('room:presence', { roomId: room.id, users: getRoomUsers(room.id) });
+  broadcastPresence(room.id);
 }
