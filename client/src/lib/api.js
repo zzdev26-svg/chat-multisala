@@ -25,6 +25,8 @@ export const api = {
   guest: (username) => request('/api/auth/guest', { method: 'POST', body: { username } }),
   updateColor: (token, { textColor, bgColor }) =>
     request('/api/auth/me', { method: 'PATCH', body: { textColor, bgColor }, token }),
+  updatePlan: (token, plan) => request('/api/auth/plan', { method: 'PATCH', body: { plan }, token }),
+  getIceServers: (token) => request('/api/calls/ice-servers', { token }),
   listRooms: (token) => request('/api/rooms', { token }),
   createRoom: (token, name) => request('/api/rooms', { method: 'POST', body: { name }, token }),
   listDmRooms: (token) => request('/api/rooms/dm', { token }),

@@ -175,6 +175,29 @@ input {
   border-color: var(--accent);
 }
 
+/* ---------- Plan badge (topbar) ---------- */
+
+.plan-badge {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.plan-badge:hover {
+  border-color: var(--accent);
+}
+
+.plan-badge.pro {
+  background: linear-gradient(135deg, #ffd76a, #ffa94d);
+  color: #241a00;
+  border-color: transparent;
+  font-weight: 700;
+}
+
 /* ---------- Location toggle (topbar) ---------- */
 
 .location-toggle {
@@ -663,6 +686,18 @@ input {
   padding: 0.75rem 1.1rem;
   display: flex;
   justify-content: center;
+}
+
+.call-network-badge {
+  position: absolute;
+  top: 1rem;
+  left: 1.7rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(15, 17, 21, 0.75);
+  color: var(--text);
 }
 
 .remote-video {

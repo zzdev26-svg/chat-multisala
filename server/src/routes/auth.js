@@ -46,6 +46,7 @@ router.post('/register', (req, res) => {
     username,
     isGuest: false,
     isAdmin: role === 'admin',
+    isPro: false,
     textColor: null,
     bgColor: null,
   };
@@ -75,6 +76,7 @@ router.post('/login', (req, res) => {
     username: row.username,
     isGuest: false,
     isAdmin: row.role === 'admin',
+    isPro: row.plan === 'pro',
     textColor: row.text_color,
     bgColor: row.bg_color,
   };
@@ -117,6 +119,7 @@ router.post('/guest', (req, res) => {
     username: finalUsername,
     isGuest: true,
     isAdmin: false,
+    isPro: false,
     textColor: null,
     bgColor: null,
   };
@@ -138,13 +141,41 @@ router.patch('/me', requireAuth, (req, res) => {
 
   db.prepare('UPDATE users SET text_color = ?, bg_color = ? WHERE id = ?').run(textColor, bgColor, req.user.id);
 
-  const row = db.prepare('SELECT id, username, is_guest, role, text_color, bg_color FROM users WHERE id = ?').get(req.user.id);
+  const row = db.prepare('SELECT id, username, is_guest, role, plan, text_color, bg_color FROM users WHERE id = ?').get(req.user.id);
   res.json({
     user: {
       id: row.id,
       username: row.username,
       isGuest: !!row.is_guest,
       isAdmin: row.role === 'admin',
+      isPro: row.plan === 'pro',
+      textColor: row.text_color,
+      bgColor: row.bg_color,
+    },
+  });
+});
+
+// STUB: stands in for a real payment flow. Today it just flips the plan on
+// request — wire this to a Stripe/Mercado Pago webhook (or whatever
+// processor you pick) before shipping, and remove the ability to call it
+// directly from the client. Kept unauthenticated-to-abuse-but-not-to-access
+// (still requireAuth) so the rest of the app can be built and demoed today.
+router.patch('/plan', requireAuth, (req, res) => {
+  const { plan } = req.body || {};
+  if (plan !== 'free' && plan !== 'pro') {
+    return res.status(400).json({ error: "plan debe ser 'free' o 'pro'." });
+  }
+
+  db.prepare('UPDATE users SET plan = ? WHERE id = ?').run(plan, req.user.id);
+
+  const row = db.prepare('SELECT id, username, is_guest, role, plan, text_color, bg_color FROM users WHERE id = ?').get(req.user.id);
+  res.json({
+    user: {
+      id: row.id,
+      username: row.username,
+      isGuest: !!row.is_guest,
+      isAdmin: row.role === 'admin',
+      isPro: row.plan === 'pro',
       textColor: row.text_color,
       bgColor: row.bg_color,
     },

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { api } from '../lib/api.js';
 import { getSocket } from '../lib/socket.js';
 import { playNotificationSound } from '../lib/sound.js';
 
-// Public STUN only (no TURN) — enough to traverse most home NATs for a
-// personal project; very restrictive/symmetric NATs may fail to connect.
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// Fallback if the ICE-servers request fails for any reason — public STUN
+// only. The real (possibly TURN-augmented) list comes from the server per
+// call, since whether TURN is included depends on the caller's plan.
+const FALLBACK_ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 // One call ('idle' | 'calling' | 'ringing' | 'in-call') per open DM panel.
 // Scoped to the ChatWindow instance's lifetime: closing the panel hangs up.
@@ -13,6 +15,7 @@ export function useCall(roomId, enabled) {
   const [callerUsername, setCallerUsername] = useState(null);
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
+  const [usingTurn, setUsingTurn] = useState(false);
   const [error, setError] = useState('');
 
   const pcRef = useRef(null);
@@ -31,11 +34,28 @@ export function useCall(roomId, enabled) {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     setMicOn(true);
     setCameraOn(true);
+    setUsingTurn(false);
   }, []);
 
-  function createPeerConnection() {
+  async function createPeerConnection() {
     const socket = getSocket();
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    // Asked fresh per call: whether TURN is included depends on the plan
+    // (see server/src/routes/calls.js) — never cached client-side.
+    let iceServers = FALLBACK_ICE_SERVERS;
+    try {
+      const token = socket?.auth?.token;
+      if (token) {
+        const res = await api.getIceServers(token);
+        if (Array.isArray(res.iceServers) && res.iceServers.length > 0) iceServers = res.iceServers;
+        setUsingTurn(!!res.turnAvailable);
+      }
+    } catch {
+      // Keep the STUN-only fallback — a call should still work on most
+      // home networks even if this request fails.
+    }
+
+    const pc = new RTCPeerConnection({ iceServers });
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         socket?.emit('call:signal', { roomId, data: { type: 'ice-candidate', candidate: e.candidate } });
@@ -127,7 +147,7 @@ export function useCall(roomId, enabled) {
       if (rid !== roomId) return;
       try {
         await startLocalMedia();
-        const pc = createPeerConnection();
+        const pc = await createPeerConnection();
         localStreamRef.current.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -162,7 +182,7 @@ export function useCall(roomId, enabled) {
 
       if (data.type === 'offer') {
         // We're the callee: local media is already up from acceptCall().
-        pc = pc || createPeerConnection();
+        pc = pc || (await createPeerConnection());
         localStreamRef.current?.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
         for (const candidate of pendingCandidatesRef.current) await pc.addIceCandidate(candidate);
@@ -214,6 +234,7 @@ export function useCall(roomId, enabled) {
     callerUsername,
     micOn,
     cameraOn,
+    usingTurn,
     error,
     localVideoRef,
     remoteVideoRef,

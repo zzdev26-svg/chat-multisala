@@ -112,6 +112,9 @@ export default function ChatWindow({
             <div className="call-video-area">
               <video ref={call.remoteVideoRef} className="remote-video" autoPlay playsInline />
               <video ref={call.localVideoRef} className="local-video" autoPlay playsInline muted />
+              <span className="call-network-badge" title="Modo de conexion de esta llamada">
+                {call.usingTurn ? '🔒 TURN (Pro)' : '📡 Solo STUN'}
+              </span>
               <div className="call-controls">
                 <button type="button" className="icon-btn" title={call.micOn ? 'Silenciar' : 'Activar microfono'} onClick={call.toggleMic}>
                   {call.micOn ? '🎤' : '🔇'}
