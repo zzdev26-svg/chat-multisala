@@ -31,6 +31,12 @@ db.exec(`
     name TEXT NOT NULL UNIQUE,
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     is_dm INTEGER NOT NULL DEFAULT 0,
+    -- Set on a DM room that's really a "contact support" thread for a
+    -- public room: support_for_room_id is that public room, and
+    -- support_for_user_id is the (non-admin) user who started it. Access to
+    -- these two rooms isn't a fixed room_members row — see canAccessDmRoom.
+    support_for_room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE,
+    support_for_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -56,7 +62,8 @@ db.exec(`
     edited_at TEXT,
     deleted_at TEXT,
     text_color TEXT,
-    bg_color TEXT
+    bg_color TEXT,
+    is_support INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE INDEX IF NOT EXISTS idx_messages_room_created
@@ -92,6 +99,9 @@ ensureColumn('users', 'text_color', 'TEXT');
 ensureColumn('users', 'bg_color', 'TEXT');
 ensureColumn('messages', 'text_color', 'TEXT');
 ensureColumn('messages', 'bg_color', 'TEXT');
+ensureColumn('messages', 'is_support', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('rooms', 'support_for_room_id', 'INTEGER REFERENCES rooms(id) ON DELETE CASCADE');
+ensureColumn('rooms', 'support_for_user_id', 'INTEGER REFERENCES users(id) ON DELETE CASCADE');
 
 // Seed a couple of default public rooms if none exist yet.
 const roomCount = db.prepare('SELECT COUNT(*) AS count FROM rooms').get().count;

@@ -27,10 +27,13 @@ export const api = {
     request('/api/auth/me', { method: 'PATCH', body: { textColor, bgColor }, token }),
   updatePlan: (token, plan) => request('/api/auth/plan', { method: 'PATCH', body: { plan }, token }),
   getIceServers: (token) => request('/api/calls/ice-servers', { token }),
+  promoteToAdmin: (token, username) =>
+    request(`/api/users/${encodeURIComponent(username)}/promote`, { method: 'PATCH', token }),
   listRooms: (token) => request('/api/rooms', { token }),
   createRoom: (token, name) => request('/api/rooms', { method: 'POST', body: { name }, token }),
   listDmRooms: (token) => request('/api/rooms/dm', { token }),
   startDm: (token, username) => request('/api/rooms/dm', { method: 'POST', body: { username }, token }),
+  contactSupport: (token, roomId) => request('/api/rooms/support', { method: 'POST', body: { roomId }, token }),
   getMessages: (token, roomId, before) =>
     request(`/api/rooms/${roomId}/messages${before ? `?before=${encodeURIComponent(before)}` : ''}`, {
       token,

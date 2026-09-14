@@ -6,6 +6,7 @@ import { PORT, CLIENT_ORIGIN } from './config.js';
 import authRoutes from './routes/auth.js';
 import roomsRoutes from './routes/rooms.js';
 import callsRoutes from './routes/calls.js';
+import usersRoutes from './routes/users.js';
 import { registerSocketHandlers } from './socket.js';
 import './db/index.js'; // ensures schema is created on boot
 
@@ -17,6 +18,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomsRoutes);
 app.use('/api/calls', callsRoutes);
+app.use('/api/users', usersRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

@@ -8,6 +8,7 @@ export default function ChatWindow({
   room,
   messages,
   currentUsername,
+  currentUserId,
   isAdmin,
   users,
   typingUsers,
@@ -21,7 +22,9 @@ export default function ChatWindow({
   onReact,
   onClose,
   onSelectUser,
+  onContactSupport,
   onKickUser,
+  onPromoteUser,
 }) {
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
@@ -145,7 +148,7 @@ export default function ChatWindow({
               <MessageItem
                 key={m.id}
                 message={m}
-                isOwn={m.username === currentUsername}
+                isOwn={m.user_id === currentUserId}
                 currentUsername={currentUsername}
                 onEdit={onEdit}
                 onDelete={onDelete}
@@ -170,7 +173,16 @@ export default function ChatWindow({
               {users.map((u) => (
                 <li key={u.username} className="member-row">
                   <Avatar username={u.username} size={24} />
-                  {u.username === currentUsername ? (
+                  {u.isSupportContact ? (
+                    <button
+                      type="button"
+                      className="member-name member-name-btn support-contact-btn"
+                      title={`Contactar al soporte de ${u.username}`}
+                      onClick={() => onContactSupport(room.id)}
+                    >
+                      🎧 {u.username}
+                    </button>
+                  ) : u.username === currentUsername ? (
                     <span className="member-name">{u.username} (vos)</span>
                   ) : (
                     <button
@@ -182,19 +194,31 @@ export default function ChatWindow({
                       {u.username}
                     </button>
                   )}
-                  {u.proximity && (
-                    <span className={`proximity-badge proximity-${u.proximity.bucket}`}>{u.proximity.label}</span>
-                  )}
-                  {isAdmin && u.username !== currentUsername && (
-                    <button
-                      type="button"
-                      className="icon-btn kick-btn"
-                      title={`Expulsar a ${u.username}`}
-                      onClick={() => onKickUser(u.username)}
-                    >
-                      🚫
-                    </button>
-                  )}
+                  <span className="member-trailing">
+                    {u.proximity && (
+                      <span className={`proximity-badge proximity-${u.proximity.bucket}`}>{u.proximity.label}</span>
+                    )}
+                    {isAdmin && !u.isSupportContact && u.username !== currentUsername && !u.isAdmin && (
+                      <button
+                        type="button"
+                        className="icon-btn promote-btn"
+                        title={`Hacer admin a ${u.username}`}
+                        onClick={() => onPromoteUser(u.username)}
+                      >
+                        👑
+                      </button>
+                    )}
+                    {isAdmin && !u.isSupportContact && u.username !== currentUsername && (
+                      <button
+                        type="button"
+                        className="icon-btn kick-btn"
+                        title={`Expulsar a ${u.username}`}
+                        onClick={() => onKickUser(u.username)}
+                      >
+                        🚫
+                      </button>
+                    )}
+                  </span>
                 </li>
               ))}
             </ul>

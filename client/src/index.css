@@ -585,7 +585,6 @@ input {
 }
 
 .proximity-badge {
-  margin-left: auto;
   flex-shrink: 0;
   font-size: 0.65rem;
   font-weight: 600;
@@ -614,9 +613,16 @@ input {
   color: var(--text-dim);
 }
 
-.kick-btn {
+.member-trailing {
   margin-left: auto;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.promote-btn:hover {
+  background: rgba(255, 212, 59, 0.15);
 }
 
 .kick-btn:hover {
@@ -643,6 +649,11 @@ input {
 .member-name-btn:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+
+.support-contact-btn {
+  color: #63e6be !important;
+  font-style: italic;
 }
 
 /* ---------- Camera calls (DM only) ---------- */
@@ -824,6 +835,15 @@ input {
 .message-edited {
   font-style: italic;
   opacity: 0.75;
+}
+
+.support-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #63e6be;
+  background: rgba(99, 230, 190, 0.15);
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
 }
 
 .message-content {
@@ -1008,10 +1028,12 @@ input {
 
 .message-input {
   display: flex;
+  align-items: center;
   gap: 0.6rem;
   padding: 0.8rem 1.1rem 1rem;
   border-top: 1px solid var(--border);
 }
+
 
 .message-input input {
   flex: 1;

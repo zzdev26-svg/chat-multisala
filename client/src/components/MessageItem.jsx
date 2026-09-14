@@ -54,6 +54,11 @@ export default function MessageItem({ message, isOwn, currentUsername, onEdit, o
       <div className={isOwn ? 'message own' : 'message'} style={customStyle}>
         <div className="message-meta">
           <span className="message-author">{message.username}</span>
+          {!!message.is_support && (
+            <span className="support-badge" title="Mensaje oficial de esta sala">
+              ✓ Soporte
+            </span>
+          )}
           <span className="message-time">{formatTime(message.created_at)}</span>
           {message.edited_at && !isDeleted && <span className="message-edited">(editado)</span>}
         </div>

@@ -1,6 +1,11 @@
 import { db } from './db/index.js';
 import { insertMessage, editMessage, deleteMessage, toggleReaction } from './db/messages.js';
-import { isDmMember, listDmRoomIdsForUser } from './db/rooms.js';
+import {
+  canAccessDmRoom,
+  listAllSupportRoomIds,
+  listDmRoomIdsForUser,
+  listSupportRoomIdsForUser,
+} from './db/rooms.js';
 import { verifyToken } from './utils/jwt.js';
 
 const ALLOWED_EMOJIS = new Set(['👍', '❤️', '😂', '😮', '😢', '🎉']);
@@ -51,16 +56,30 @@ function haversineKm(a, b) {
 // opted in. Nearest-first when the viewer has a location; otherwise
 // unaffected (no one gets sorted or badged).
 function getRoomUsers(roomId, viewerUserId) {
-  const map = roomPresence.get(roomId);
-  if (!map) return [];
+  const map = roomPresence.get(roomId) || new Map();
   const viewerLoc = viewerUserId != null ? userLocations.get(viewerUserId) : null;
 
   const seen = new Set();
-  const users = [];
+  const entries = [];
   for (const u of map.values()) {
     if (seen.has(u.username)) continue;
     seen.add(u.username);
+    entries.push(u);
+  }
 
+  // Role is queried fresh (not cached on the socket from connect time) so a
+  // promotion shows up on the very next presence broadcast, not just after
+  // the promoted user reconnects.
+  const roleById = new Map();
+  if (entries.length > 0) {
+    const ids = entries.map((u) => u.id);
+    const placeholders = ids.map(() => '?').join(',');
+    for (const row of db.prepare(`SELECT id, role FROM users WHERE id IN (${placeholders})`).all(...ids)) {
+      roleById.set(row.id, row.role);
+    }
+  }
+
+  let users = entries.map((u) => {
     let proximity = null;
     if (viewerLoc && u.id !== viewerUserId) {
       const targetLoc = userLocations.get(u.id);
@@ -69,10 +88,29 @@ function getRoomUsers(roomId, viewerUserId) {
         proximity = { bucket, label };
       }
     }
-    users.push({ username: u.username, isGuest: u.isGuest, proximity });
-  }
+    return { username: u.username, isGuest: u.isGuest, isAdmin: roleById.get(u.id) === 'admin', proximity };
+  });
 
   users.sort((a, b) => (a.proximity?.bucket ?? 99) - (b.proximity?.bucket ?? 99));
+
+  // Regular users don't see which admins are actually online — the virtual
+  // support contact below is the only "admin-ish" presence they get, kept
+  // consistent with how support replies mask the admin's real identity.
+  // Admins still see each other (and everyone else) fully, since they need
+  // that to kick/promote.
+  const viewerRole = viewerUserId != null ? db.prepare('SELECT role FROM users WHERE id = ?').get(viewerUserId)?.role : null;
+  if (viewerRole !== 'admin') {
+    users = users.filter((u) => !u.isAdmin);
+  }
+
+  // Every public room shows a virtual "contact support" entry named after
+  // the room itself — not a real connection, just a way for anyone to reach
+  // whichever admins are around. Always first, never sorted by proximity.
+  const room = db.prepare('SELECT is_dm, name FROM rooms WHERE id = ?').get(roomId);
+  if (room && !room.is_dm) {
+    users.unshift({ username: room.name, isGuest: false, isAdmin: false, isSupportContact: true, proximity: null });
+  }
+
   return users;
 }
 
@@ -151,7 +189,15 @@ export function registerSocketHandlers(server) {
     // this user belongs to right away, independent of which panels their
     // client happens to have open. That's what lets a message (or the
     // unread indicator for it) reach them without opening that chat first.
-    for (const roomId of listDmRoomIdsForUser(socket.user.id)) {
+    // Support threads work the same way: their own if they're a regular
+    // user, or *every* open thread system-wide if they're currently an
+    // admin — that's what makes it a shared inbox.
+    const isAdmin = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id)?.role === 'admin';
+    const liveRoomIds = [
+      ...listDmRoomIdsForUser(socket.user.id),
+      ...(isAdmin ? listAllSupportRoomIds() : listSupportRoomIdsForUser(socket.user.id)),
+    ];
+    for (const roomId of liveRoomIds) {
       socket.join(`room:${roomId}`);
       currentRooms.add(roomId);
       addPresence(roomId, socket.id, socket.user);
@@ -164,9 +210,12 @@ export function registerSocketHandlers(server) {
         socket.emit('error:message', 'Sala no encontrada.');
         return;
       }
-      if (room.is_dm && !isDmMember(roomId, socket.user.id)) {
-        socket.emit('error:message', 'No tenes acceso a este chat privado.');
-        return;
+      if (room.is_dm) {
+        const role = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id)?.role;
+        if (!canAccessDmRoom(roomId, socket.user.id, role)) {
+          socket.emit('error:message', 'No tenes acceso a este chat privado.');
+          return;
+        }
       }
 
       socket.join(`room:${roomId}`);
@@ -203,13 +252,33 @@ export function registerSocketHandlers(server) {
         return;
       }
 
+      // Inside a "contact support" thread, any *current* admin's reply
+      // automatically shows under the public room's own name instead of
+      // theirs — no per-message opt-in, fully server-derived (never trust a
+      // client-sent flag for this). user_id still points at the real admin,
+      // so edit/delete ownership of that message is unaffected.
+      let username = socket.user.username;
+      let isSupport = false;
+      const room = db.prepare('SELECT support_for_room_id FROM rooms WHERE id = ?').get(roomId);
+      if (room?.support_for_room_id != null) {
+        const sender = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id);
+        if (sender?.role === 'admin') {
+          const publicRoom = db.prepare('SELECT name FROM rooms WHERE id = ?').get(room.support_for_room_id);
+          if (publicRoom) {
+            username = publicRoom.name;
+            isSupport = true;
+          }
+        }
+      }
+
       // Read the sender's current color fresh from the DB (not a cached
       // value on the socket) so a color change applies to the very next
       // message without needing to reconnect.
       const profile = db.prepare('SELECT text_color, bg_color FROM users WHERE id = ?').get(socket.user.id);
-      const message = insertMessage(roomId, socket.user.id, socket.user.username, content.trim(), {
+      const message = insertMessage(roomId, socket.user.id, username, content.trim(), {
         textColor: profile?.text_color ?? null,
         bgColor: profile?.bg_color ?? null,
+        isSupport,
       });
       io.to(`room:${roomId}`).emit('message:new', { roomId, message });
     });
@@ -290,11 +359,21 @@ export function registerSocketHandlers(server) {
     safeOn(socket, 'typing', ({ roomId, isTyping }) => {
       roomId = Number(roomId);
       if (!currentRooms.has(roomId)) return;
-      socket.to(`room:${roomId}`).emit('typing', {
-        roomId,
-        username: socket.user.username,
-        isTyping: !!isTyping,
-      });
+
+      // Same anonymity as message:send: an admin typing in a support thread
+      // shouldn't leak their real username through the typing indicator
+      // while their actual messages show up as the room.
+      let username = socket.user.username;
+      const room = db.prepare('SELECT support_for_room_id FROM rooms WHERE id = ?').get(roomId);
+      if (room?.support_for_room_id != null) {
+        const sender = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id);
+        if (sender?.role === 'admin') {
+          const publicRoom = db.prepare('SELECT name FROM rooms WHERE id = ?').get(room.support_for_room_id);
+          if (publicRoom) username = publicRoom.name;
+        }
+      }
+
+      socket.to(`room:${roomId}`).emit('typing', { roomId, username, isTyping: !!isTyping });
     });
 
     // Opt-in "nearby users": share a fresh reading, or turn sharing off.
@@ -390,4 +469,85 @@ export function notifyUserOfNewDm(targetUserId, room, senderInfo) {
   }
 
   broadcastPresence(room.id);
+}
+
+// Called from the REST layer right after a user is promoted to admin. Tells
+// their own live client(s) immediately (so admin-only UI shows up without a
+// re-login) and refreshes presence in every room they're currently in, so
+// other members' room panels stop offering to promote someone who already is.
+export function notifyUserPromoted(userId) {
+  const socketIds = userSockets.get(userId);
+  if (!socketIds || !io) return;
+
+  // A brand-new admin should see the whole shared support inbox immediately,
+  // not just the threads they'd personally started as a regular user.
+  const supportRoomIds = listAllSupportRoomIds();
+
+  for (const socketId of socketIds) {
+    const socket = io.sockets.sockets.get(socketId);
+    if (!socket) continue;
+
+    for (const roomId of supportRoomIds) {
+      socket.join(`room:${roomId}`);
+      socket.data.currentRooms?.add(roomId);
+      addPresence(roomId, socketId, socket.user);
+
+      // Without this, the new admin's socket has the room server-side but
+      // their sidebar has no idea it exists until they reload the page.
+      const info = db
+        .prepare(
+          `SELECT pr.name AS public_room_name, u.username AS initiator_username, u.is_guest AS initiator_is_guest
+           FROM rooms r
+           JOIN rooms pr ON pr.id = r.support_for_room_id
+           JOIN users u ON u.id = r.support_for_user_id
+           WHERE r.id = ?`
+        )
+        .get(roomId);
+      if (info) {
+        socket.emit('dm:new', {
+          room: {
+            id: roomId,
+            otherUsername: `🎧 ${info.public_room_name} · ${info.initiator_username}`,
+            otherIsGuest: !!info.initiator_is_guest,
+          },
+        });
+      }
+    }
+
+    socket.emit('role:updated', { isAdmin: true });
+    for (const roomId of socket.data.currentRooms || []) broadcastPresence(roomId);
+  }
+}
+
+// Called from the REST layer right after a "contact support" thread is
+// created for the first time. Pushes it live to every *currently connected*
+// admin — joins their socket(s) to it and lets their sidebar pick it up —
+// same idea as notifyUserOfNewDm, just fanned out to a role instead of one
+// fixed recipient.
+export function notifyAdminsOfNewSupportThread(supportRoom, publicRoom, initiatorInfo) {
+  if (!io) return;
+
+  for (const [userId, socketIds] of userSockets.entries()) {
+    const isAdmin = db.prepare('SELECT role FROM users WHERE id = ?').get(userId)?.role === 'admin';
+    if (!isAdmin) continue;
+
+    for (const socketId of socketIds) {
+      const socket = io.sockets.sockets.get(socketId);
+      if (!socket) continue;
+
+      socket.join(`room:${supportRoom.id}`);
+      socket.data.currentRooms?.add(supportRoom.id);
+      addPresence(supportRoom.id, socketId, socket.user);
+
+      socket.emit('dm:new', {
+        room: {
+          id: supportRoom.id,
+          otherUsername: `🎧 ${publicRoom.name} · ${initiatorInfo.username}`,
+          otherIsGuest: !!initiatorInfo.isGuest,
+        },
+      });
+    }
+  }
+
+  broadcastPresence(supportRoom.id);
 }

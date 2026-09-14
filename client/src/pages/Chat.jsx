@@ -139,6 +139,12 @@ export default function Chat() {
       alert(`${by} te expulso de la sala.`);
     }
 
+    // Another admin promoted us — reflect it locally right away instead of
+    // waiting for a re-login (admin-only UI is gated on user.isAdmin).
+    function onRoleUpdated({ isAdmin }) {
+      updateUser({ isAdmin: !!isAdmin });
+    }
+
     function onErrorMessage(msg) {
       console.error('Socket error:', msg);
     }
@@ -156,6 +162,7 @@ export default function Chat() {
     socket.on('typing', onTyping);
     socket.on('dm:new', onDmNew);
     socket.on('room:kicked', onKicked);
+    socket.on('role:updated', onRoleUpdated);
     socket.on('error:message', onErrorMessage);
     socket.on('connect_error', onConnectError);
 
@@ -166,10 +173,11 @@ export default function Chat() {
       socket.off('typing', onTyping);
       socket.off('dm:new', onDmNew);
       socket.off('room:kicked', onKicked);
+      socket.off('role:updated', onRoleUpdated);
       socket.off('error:message', onErrorMessage);
       socket.off('connect_error', onConnectError);
     };
-  }, [token, user.username, logout]);
+  }, [token, user.username, logout, updateUser]);
 
   // Reflect unread messages in the tab title while the window is hidden.
   useEffect(() => {
@@ -364,6 +372,20 @@ export default function Chat() {
     }
   }
 
+  // Opens (or resumes) the shared support thread for a room, e.g. after
+  // clicking its virtual "🎧 {roomName}" entry in the presence list.
+  async function handleContactSupport(roomId) {
+    try {
+      const { room } = await api.contactSupport(token, roomId);
+      setDmRooms((prev) =>
+        prev.some((r) => r.id === room.id) ? prev : [...prev, { id: room.id, name: room.otherUsername, isDm: true }]
+      );
+      setOpenRoomIds((prev) => (prev.includes(room.id) ? prev : [...prev, room.id]));
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   function handleToggleRoom(roomId) {
     setOpenRoomIds((prev) => (prev.includes(roomId) ? prev.filter((id) => id !== roomId) : [...prev, roomId]));
   }
@@ -372,8 +394,8 @@ export default function Chat() {
     setOpenRoomIds((prev) => prev.filter((id) => id !== roomId));
   }
 
-  function handleSend(roomId, content) {
-    socketRef.current?.emit('message:send', { roomId, content });
+  function handleSend(roomId, content, { asRoom = false } = {}) {
+    socketRef.current?.emit('message:send', { roomId, content, asRoom });
   }
 
   function handleTyping(roomId, isTyping) {
@@ -396,6 +418,15 @@ export default function Chat() {
   function handleKickUser(roomId, username) {
     if (!window.confirm(`¿Expulsar a ${username} de la sala?`)) return;
     socketRef.current?.emit('room:kick', { roomId, username });
+  }
+
+  async function handlePromoteUser(username) {
+    if (!window.confirm(`¿Hacer administrador a ${username}?`)) return;
+    try {
+      await api.promoteToAdmin(token, username);
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   async function handleUpdateColor({ textColor, bgColor }) {
@@ -448,20 +479,23 @@ export default function Chat() {
                   room={room}
                   messages={messagesByRoom[roomId] || []}
                   currentUsername={user.username}
+                  currentUserId={user.id}
                   isAdmin={!!user.isAdmin}
                   users={presenceByRoom[roomId] || []}
                   typingUsers={typingUsers}
                   hasMore={!!hasMoreByRoom[roomId]}
                   loadingOlder={!!loadingOlderByRoom[roomId]}
                   onLoadOlder={() => handleLoadOlder(roomId)}
-                  onSend={(content) => handleSend(roomId, content)}
+                  onSend={(content, options) => handleSend(roomId, content, options)}
                   onTyping={(isTyping) => handleTyping(roomId, isTyping)}
                   onEdit={(messageId, content) => handleEditMessage(roomId, messageId, content)}
                   onDelete={(messageId) => handleDeleteMessage(roomId, messageId)}
                   onReact={(messageId, emoji) => handleReact(roomId, messageId, emoji)}
                   onClose={() => handleCloseRoom(roomId)}
                   onSelectUser={handleStartDm}
+                  onContactSupport={handleContactSupport}
                   onKickUser={(username) => handleKickUser(roomId, username)}
+                  onPromoteUser={handlePromoteUser}
                 />
               );
             })}

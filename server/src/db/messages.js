@@ -1,7 +1,7 @@
 import { db } from './index.js';
 
 const MESSAGE_COLUMNS =
-  'id, room_id, user_id, username, content, created_at, edited_at, deleted_at, text_color, bg_color';
+  'id, room_id, user_id, username, content, created_at, edited_at, deleted_at, text_color, bg_color, is_support';
 
 function attachReactions(messages) {
   if (messages.length === 0) return messages;
@@ -58,10 +58,21 @@ export function getMessageById(id) {
 // textColor/bgColor are captured from the sender's profile at send time and
 // stored directly on the row — same denormalization already used for
 // `username`, so a later color (or username) change doesn't rewrite history.
-export function insertMessage(roomId, userId, username, content, { textColor = null, bgColor = null } = {}) {
+// isSupport marks a message an admin sent under the room's own name (see
+// socket.js message:send) — user_id still points at the real admin, so
+// edit/delete ownership is unaffected; it's purely a display distinction.
+export function insertMessage(
+  roomId,
+  userId,
+  username,
+  content,
+  { textColor = null, bgColor = null, isSupport = false } = {}
+) {
   const info = db
-    .prepare('INSERT INTO messages (room_id, user_id, username, content, text_color, bg_color) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(roomId, userId, username, content, textColor, bgColor);
+    .prepare(
+      'INSERT INTO messages (room_id, user_id, username, content, text_color, bg_color, is_support) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    )
+    .run(roomId, userId, username, content, textColor, bgColor, isSupport ? 1 : 0);
   return getMessageById(info.lastInsertRowid);
 }
 
