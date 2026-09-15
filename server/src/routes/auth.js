@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { customAlphabet } from 'nanoid';
 import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
+import { loginLimiter, signupLimiter } from '../middleware/rateLimit.js';
 import { signToken } from '../utils/jwt.js';
 
 const router = Router();
@@ -15,7 +16,7 @@ function findUserByUsername(username) {
   return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
 }
 
-router.post('/register', (req, res) => {
+router.post('/register', signupLimiter, (req, res) => {
   const { username, password } = req.body || {};
 
   if (typeof username !== 'string' || !USERNAME_RE.test(username)) {
@@ -54,7 +55,7 @@ router.post('/register', (req, res) => {
   res.status(201).json({ token, user });
 });
 
-router.post('/login', (req, res) => {
+router.post('/login', loginLimiter, (req, res) => {
   const { username, password } = req.body || {};
 
   if (typeof username !== 'string' || typeof password !== 'string') {
@@ -84,7 +85,7 @@ router.post('/login', (req, res) => {
   res.json({ token, user });
 });
 
-router.post('/guest', (req, res) => {
+router.post('/guest', signupLimiter, (req, res) => {
   let { username } = req.body || {};
 
   if (typeof username !== 'string' || !username.trim()) {
