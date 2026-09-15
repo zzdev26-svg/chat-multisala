@@ -4,7 +4,7 @@ import { QUICK_EMOJIS } from '../lib/emojis.js';
 
 function formatTime(iso) {
   try {
-    return new Date(`${iso}Z`).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   } catch {
     return '';
   }

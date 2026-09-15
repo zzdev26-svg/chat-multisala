@@ -1,4 +1,4 @@
-import { db } from './db/index.js';
+import { pool } from './db/index.js';
 import { insertMessage, editMessage, deleteMessage, toggleReaction } from './db/messages.js';
 import {
   canAccessDmRoom,
@@ -55,7 +55,7 @@ function haversineKm(a, b) {
 // *viewer's own* opted-in location, and only for other users who also
 // opted in. Nearest-first when the viewer has a location; otherwise
 // unaffected (no one gets sorted or badged).
-function getRoomUsers(roomId, viewerUserId) {
+async function getRoomUsers(roomId, viewerUserId) {
   const map = roomPresence.get(roomId) || new Map();
   const viewerLoc = viewerUserId != null ? userLocations.get(viewerUserId) : null;
 
@@ -73,10 +73,9 @@ function getRoomUsers(roomId, viewerUserId) {
   const roleById = new Map();
   if (entries.length > 0) {
     const ids = entries.map((u) => u.id);
-    const placeholders = ids.map(() => '?').join(',');
-    for (const row of db.prepare(`SELECT id, role FROM users WHERE id IN (${placeholders})`).all(...ids)) {
-      roleById.set(row.id, row.role);
-    }
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+    const { rows } = await pool.query(`SELECT id, role FROM users WHERE id IN (${placeholders})`, ids);
+    for (const row of rows) roleById.set(row.id, row.role);
   }
 
   let users = entries.map((u) => {
@@ -98,7 +97,11 @@ function getRoomUsers(roomId, viewerUserId) {
   // consistent with how support replies mask the admin's real identity.
   // Admins still see each other (and everyone else) fully, since they need
   // that to kick/promote.
-  const viewerRole = viewerUserId != null ? db.prepare('SELECT role FROM users WHERE id = ?').get(viewerUserId)?.role : null;
+  let viewerRole = null;
+  if (viewerUserId != null) {
+    const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', [viewerUserId]);
+    viewerRole = rows[0]?.role ?? null;
+  }
   if (viewerRole !== 'admin') {
     users = users.filter((u) => !u.isAdmin);
   }
@@ -106,7 +109,8 @@ function getRoomUsers(roomId, viewerUserId) {
   // Every public room shows a virtual "contact support" entry named after
   // the room itself — not a real connection, just a way for anyone to reach
   // whichever admins are around. Always first, never sorted by proximity.
-  const room = db.prepare('SELECT is_dm, name FROM rooms WHERE id = ?').get(roomId);
+  const { rows: roomRows } = await pool.query('SELECT is_dm, name FROM rooms WHERE id = $1', [roomId]);
+  const room = roomRows[0];
   if (room && !room.is_dm) {
     users.unshift({ username: room.name, isGuest: false, isAdmin: false, isSupportContact: true, proximity: null });
   }
@@ -116,13 +120,13 @@ function getRoomUsers(roomId, viewerUserId) {
 
 // room:presence can't be a single shared broadcast once it's personalized —
 // each socket in the room gets its own view of who's near *them*.
-function broadcastPresence(roomId) {
+async function broadcastPresence(roomId) {
   const socketIds = io?.sockets.adapter.rooms.get(`room:${roomId}`);
   if (!socketIds) return;
   for (const socketId of socketIds) {
     const sock = io.sockets.sockets.get(socketId);
     if (!sock) continue;
-    sock.emit('room:presence', { roomId, users: getRoomUsers(roomId, sock.user.id) });
+    sock.emit('room:presence', { roomId, users: await getRoomUsers(roomId, sock.user.id) });
   }
 }
 
@@ -138,16 +142,19 @@ function removePresence(roomId, socketId) {
   if (map.size === 0) roomPresence.delete(roomId);
 }
 
-function isDmRoom(roomId) {
-  return !!db.prepare('SELECT is_dm FROM rooms WHERE id = ?').get(roomId)?.is_dm;
+async function isDmRoom(roomId) {
+  const { rows } = await pool.query('SELECT is_dm FROM rooms WHERE id = $1', [roomId]);
+  return !!rows[0]?.is_dm;
 }
 
 // Wraps a handler so a thrown/DB error never crashes the whole server —
-// it's reported back to that one client instead.
+// it's reported back to that one client instead. Awaits the handler so a
+// rejected promise (every handler is async now that DB calls go through
+// pg) is caught too, not just a synchronous throw.
 function safeOn(socket, event, handler) {
-  socket.on(event, (...args) => {
+  socket.on(event, async (...args) => {
     try {
-      handler(...args);
+      await handler(...args);
     } catch (err) {
       console.error(`Error manejando el evento "${event}":`, err);
       socket.emit('error:message', 'Ocurrio un error inesperado. Intenta de nuevo.');
@@ -158,14 +165,15 @@ function safeOn(socket, event, handler) {
 export function registerSocketHandlers(server) {
   io = server;
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('No autenticado'));
     try {
       const payload = verifyToken(token);
       // Re-check against the DB (not just the JWT claims): the user may have
       // been deleted, or the dev DB reset, since the token was issued.
-      const user = db.prepare('SELECT id, username, is_guest FROM users WHERE id = ?').get(payload.id);
+      const { rows } = await pool.query('SELECT id, username, is_guest FROM users WHERE id = $1', [payload.id]);
+      const user = rows[0];
       if (!user || user.username !== payload.username) {
         return next(new Error('Sesion invalida, volve a iniciar sesion.'));
       }
@@ -192,27 +200,37 @@ export function registerSocketHandlers(server) {
     // Support threads work the same way: their own if they're a regular
     // user, or *every* open thread system-wide if they're currently an
     // admin — that's what makes it a shared inbox.
-    const isAdmin = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id)?.role === 'admin';
-    const liveRoomIds = [
-      ...listDmRoomIdsForUser(socket.user.id),
-      ...(isAdmin ? listAllSupportRoomIds() : listSupportRoomIdsForUser(socket.user.id)),
-    ];
-    for (const roomId of liveRoomIds) {
-      socket.join(`room:${roomId}`);
-      currentRooms.add(roomId);
-      addPresence(roomId, socket.id, socket.user);
-    }
+    //
+    // Run as a detached async task instead of blocking on it here — the
+    // event listeners below need to be attached synchronously so a message
+    // sent right after connecting isn't dropped while this is still awaiting.
+    (async () => {
+      const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', [socket.user.id]);
+      const isAdmin = rows[0]?.role === 'admin';
+      const liveRoomIds = [
+        ...(await listDmRoomIdsForUser(socket.user.id)),
+        ...(isAdmin ? await listAllSupportRoomIds() : await listSupportRoomIdsForUser(socket.user.id)),
+      ];
+      for (const roomId of liveRoomIds) {
+        socket.join(`room:${roomId}`);
+        currentRooms.add(roomId);
+        addPresence(roomId, socket.id, socket.user);
+      }
+    })().catch((err) => {
+      console.error('Error uniendo el socket a sus salas DM/soporte al conectar:', err);
+    });
 
-    safeOn(socket, 'room:join', (roomId) => {
+    safeOn(socket, 'room:join', async (roomId) => {
       roomId = Number(roomId);
-      const room = db.prepare('SELECT id, name, is_dm FROM rooms WHERE id = ?').get(roomId);
+      const { rows: roomRows } = await pool.query('SELECT id, name, is_dm FROM rooms WHERE id = $1', [roomId]);
+      const room = roomRows[0];
       if (!room) {
         socket.emit('error:message', 'Sala no encontrada.');
         return;
       }
       if (room.is_dm) {
-        const role = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id)?.role;
-        if (!canAccessDmRoom(roomId, socket.user.id, role)) {
+        const { rows: roleRows } = await pool.query('SELECT role FROM users WHERE id = $1', [socket.user.id]);
+        if (!(await canAccessDmRoom(roomId, socket.user.id, roleRows[0]?.role))) {
           socket.emit('error:message', 'No tenes acceso a este chat privado.');
           return;
         }
@@ -223,25 +241,25 @@ export function registerSocketHandlers(server) {
       addPresence(roomId, socket.id, socket.user);
 
       socket.emit('room:joined', { roomId, room });
-      broadcastPresence(roomId);
+      await broadcastPresence(roomId);
     });
 
-    safeOn(socket, 'room:leave', (roomId) => {
+    safeOn(socket, 'room:leave', async (roomId) => {
       roomId = Number(roomId);
       // DM membership isn't a UI concern: a participant stays "in" a private
       // chat for as long as they're connected, so closing that panel must
       // not stop messages from arriving (that's what makes the unread
       // indicator on an unopened DM possible).
-      const room = db.prepare('SELECT is_dm FROM rooms WHERE id = ?').get(roomId);
-      if (room?.is_dm) return;
+      const { rows } = await pool.query('SELECT is_dm FROM rooms WHERE id = $1', [roomId]);
+      if (rows[0]?.is_dm) return;
 
       socket.leave(`room:${roomId}`);
       currentRooms.delete(roomId);
       removePresence(roomId, socket.id);
-      broadcastPresence(roomId);
+      await broadcastPresence(roomId);
     });
 
-    safeOn(socket, 'message:send', ({ roomId, content }) => {
+    safeOn(socket, 'message:send', async ({ roomId, content }) => {
       roomId = Number(roomId);
       if (typeof content !== 'string' || !content.trim() || content.length > 2000) {
         socket.emit('error:message', 'Mensaje invalido.');
@@ -259,13 +277,16 @@ export function registerSocketHandlers(server) {
       // so edit/delete ownership of that message is unaffected.
       let username = socket.user.username;
       let isSupport = false;
-      const room = db.prepare('SELECT support_for_room_id FROM rooms WHERE id = ?').get(roomId);
+      const { rows: roomRows } = await pool.query('SELECT support_for_room_id FROM rooms WHERE id = $1', [roomId]);
+      const room = roomRows[0];
       if (room?.support_for_room_id != null) {
-        const sender = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id);
-        if (sender?.role === 'admin') {
-          const publicRoom = db.prepare('SELECT name FROM rooms WHERE id = ?').get(room.support_for_room_id);
-          if (publicRoom) {
-            username = publicRoom.name;
+        const { rows: senderRows } = await pool.query('SELECT role FROM users WHERE id = $1', [socket.user.id]);
+        if (senderRows[0]?.role === 'admin') {
+          const { rows: publicRoomRows } = await pool.query('SELECT name FROM rooms WHERE id = $1', [
+            room.support_for_room_id,
+          ]);
+          if (publicRoomRows[0]) {
+            username = publicRoomRows[0].name;
             isSupport = true;
           }
         }
@@ -274,8 +295,11 @@ export function registerSocketHandlers(server) {
       // Read the sender's current color fresh from the DB (not a cached
       // value on the socket) so a color change applies to the very next
       // message without needing to reconnect.
-      const profile = db.prepare('SELECT text_color, bg_color FROM users WHERE id = ?').get(socket.user.id);
-      const message = insertMessage(roomId, socket.user.id, username, content.trim(), {
+      const { rows: profileRows } = await pool.query('SELECT text_color, bg_color FROM users WHERE id = $1', [
+        socket.user.id,
+      ]);
+      const profile = profileRows[0];
+      const message = await insertMessage(roomId, socket.user.id, username, content.trim(), {
         textColor: profile?.text_color ?? null,
         bgColor: profile?.bg_color ?? null,
         isSupport,
@@ -283,7 +307,7 @@ export function registerSocketHandlers(server) {
       io.to(`room:${roomId}`).emit('message:new', { roomId, message });
     });
 
-    safeOn(socket, 'message:edit', ({ roomId, messageId, content }) => {
+    safeOn(socket, 'message:edit', async ({ roomId, messageId, content }) => {
       roomId = Number(roomId);
       messageId = Number(messageId);
       if (typeof content !== 'string' || !content.trim() || content.length > 2000) {
@@ -292,7 +316,7 @@ export function registerSocketHandlers(server) {
       }
       if (!currentRooms.has(roomId)) return;
 
-      const message = editMessage(messageId, socket.user.id, content.trim());
+      const message = await editMessage(messageId, socket.user.id, content.trim());
       if (!message) {
         socket.emit('error:message', 'No se pudo editar el mensaje.');
         return;
@@ -300,12 +324,12 @@ export function registerSocketHandlers(server) {
       io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
     });
 
-    safeOn(socket, 'message:delete', ({ roomId, messageId }) => {
+    safeOn(socket, 'message:delete', async ({ roomId, messageId }) => {
       roomId = Number(roomId);
       messageId = Number(messageId);
       if (!currentRooms.has(roomId)) return;
 
-      const message = deleteMessage(messageId, socket.user.id);
+      const message = await deleteMessage(messageId, socket.user.id);
       if (!message) {
         socket.emit('error:message', 'No se pudo eliminar el mensaje.');
         return;
@@ -313,12 +337,12 @@ export function registerSocketHandlers(server) {
       io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
     });
 
-    safeOn(socket, 'message:reaction', ({ roomId, messageId, emoji }) => {
+    safeOn(socket, 'message:reaction', async ({ roomId, messageId, emoji }) => {
       roomId = Number(roomId);
       messageId = Number(messageId);
       if (!ALLOWED_EMOJIS.has(emoji) || !currentRooms.has(roomId)) return;
 
-      const message = toggleReaction(messageId, socket.user.id, socket.user.username, emoji);
+      const message = await toggleReaction(messageId, socket.user.id, socket.user.username, emoji);
       if (!message) return;
       io.to(`room:${roomId}`).emit('message:updated', { roomId, message });
     });
@@ -326,15 +350,16 @@ export function registerSocketHandlers(server) {
     // Admin-only, public rooms only: forces the target out of the room right
     // now (closes their panel, drops their socket from the channel) — no
     // ban, they're free to rejoin immediately, same as a Discord "kick".
-    safeOn(socket, 'room:kick', ({ roomId, username }) => {
+    safeOn(socket, 'room:kick', async ({ roomId, username }) => {
       roomId = Number(roomId);
-      const admin = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id);
-      if (admin?.role !== 'admin') {
+      const { rows: adminRows } = await pool.query('SELECT role FROM users WHERE id = $1', [socket.user.id]);
+      if (adminRows[0]?.role !== 'admin') {
         socket.emit('error:message', 'Necesitas permisos de administrador para esto.');
         return;
       }
 
-      const room = db.prepare('SELECT is_dm FROM rooms WHERE id = ?').get(roomId);
+      const { rows: roomRows } = await pool.query('SELECT is_dm FROM rooms WHERE id = $1', [roomId]);
+      const room = roomRows[0];
       if (!room || room.is_dm) return;
 
       const map = roomPresence.get(roomId);
@@ -353,10 +378,10 @@ export function registerSocketHandlers(server) {
         targetSocket.emit('room:kicked', { roomId, by: socket.user.username });
       }
 
-      broadcastPresence(roomId);
+      await broadcastPresence(roomId);
     });
 
-    safeOn(socket, 'typing', ({ roomId, isTyping }) => {
+    safeOn(socket, 'typing', async ({ roomId, isTyping }) => {
       roomId = Number(roomId);
       if (!currentRooms.has(roomId)) return;
 
@@ -364,12 +389,15 @@ export function registerSocketHandlers(server) {
       // shouldn't leak their real username through the typing indicator
       // while their actual messages show up as the room.
       let username = socket.user.username;
-      const room = db.prepare('SELECT support_for_room_id FROM rooms WHERE id = ?').get(roomId);
+      const { rows: roomRows } = await pool.query('SELECT support_for_room_id FROM rooms WHERE id = $1', [roomId]);
+      const room = roomRows[0];
       if (room?.support_for_room_id != null) {
-        const sender = db.prepare('SELECT role FROM users WHERE id = ?').get(socket.user.id);
-        if (sender?.role === 'admin') {
-          const publicRoom = db.prepare('SELECT name FROM rooms WHERE id = ?').get(room.support_for_room_id);
-          if (publicRoom) username = publicRoom.name;
+        const { rows: senderRows } = await pool.query('SELECT role FROM users WHERE id = $1', [socket.user.id]);
+        if (senderRows[0]?.role === 'admin') {
+          const { rows: publicRoomRows } = await pool.query('SELECT name FROM rooms WHERE id = $1', [
+            room.support_for_room_id,
+          ]);
+          if (publicRoomRows[0]) username = publicRoomRows[0].name;
         }
       }
 
@@ -379,16 +407,16 @@ export function registerSocketHandlers(server) {
     // Opt-in "nearby users": share a fresh reading, or turn sharing off.
     // Affects every room this socket is currently in, since proximity to
     // everyone there just became knowable (or stopped being knowable).
-    safeOn(socket, 'location:update', ({ lat, lng } = {}) => {
+    safeOn(socket, 'location:update', async ({ lat, lng } = {}) => {
       if (typeof lat !== 'number' || typeof lng !== 'number' || Number.isNaN(lat) || Number.isNaN(lng)) return;
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
       userLocations.set(socket.user.id, { lat, lng });
-      for (const roomId of currentRooms) broadcastPresence(roomId);
+      for (const roomId of currentRooms) await broadcastPresence(roomId);
     });
 
-    safeOn(socket, 'location:disable', () => {
+    safeOn(socket, 'location:disable', async () => {
       userLocations.delete(socket.user.id);
-      for (const roomId of currentRooms) broadcastPresence(roomId);
+      for (const roomId of currentRooms) await broadcastPresence(roomId);
     });
 
     // WebRTC camera-call signaling (DM rooms only — always exactly 2
@@ -396,9 +424,9 @@ export function registerSocketHandlers(server) {
     // The server never looks inside the SDP/ICE payloads, it just forwards
     // them between the two peers.
     function safeOnCall(event, handler) {
-      safeOn(socket, event, (payload) => {
+      safeOn(socket, event, async (payload) => {
         const roomId = Number(typeof payload === 'object' && payload !== null ? payload.roomId : payload);
-        if (!currentRooms.has(roomId) || !isDmRoom(roomId)) return;
+        if (!currentRooms.has(roomId) || !(await isDmRoom(roomId))) return;
         handler(roomId, payload);
       });
     }
@@ -423,25 +451,29 @@ export function registerSocketHandlers(server) {
       socket.to(`room:${roomId}`).emit('call:signal', { roomId, data, from: socket.user.username });
     });
 
-    socket.on('disconnect', () => {
-      const sockets = userSockets.get(socket.user.id);
-      if (sockets) {
-        sockets.delete(socket.id);
-        if (sockets.size === 0) {
-          userSockets.delete(socket.user.id);
-          // Only wipe the shared location once every tab/session for this
-          // user is gone — one tab closing shouldn't blind the others.
-          userLocations.delete(socket.user.id);
+    socket.on('disconnect', async () => {
+      try {
+        const sockets = userSockets.get(socket.user.id);
+        if (sockets) {
+          sockets.delete(socket.id);
+          if (sockets.size === 0) {
+            userSockets.delete(socket.user.id);
+            // Only wipe the shared location once every tab/session for this
+            // user is gone — one tab closing shouldn't blind the others.
+            userLocations.delete(socket.user.id);
+          }
         }
-      }
 
-      for (const roomId of currentRooms) {
-        removePresence(roomId, socket.id);
-        broadcastPresence(roomId);
-        // Don't leave the other side hanging mid-call if we vanish.
-        if (isDmRoom(roomId)) {
-          socket.to(`room:${roomId}`).emit('call:end', { roomId, from: socket.user.username });
+        for (const roomId of currentRooms) {
+          removePresence(roomId, socket.id);
+          await broadcastPresence(roomId);
+          // Don't leave the other side hanging mid-call if we vanish.
+          if (await isDmRoom(roomId)) {
+            socket.to(`room:${roomId}`).emit('call:end', { roomId, from: socket.user.username });
+          }
         }
+      } catch (err) {
+        console.error('Error manejando la desconexion:', err);
       }
     });
   });
@@ -451,7 +483,7 @@ export function registerSocketHandlers(server) {
 // Pushes it live to the *other* participant if they're currently connected:
 // joins their socket(s) to the room and lets their UI add it to the "Mensajes
 // directos" list with an unread marker, with no page reload required.
-export function notifyUserOfNewDm(targetUserId, room, senderInfo) {
+export async function notifyUserOfNewDm(targetUserId, room, senderInfo) {
   const socketIds = userSockets.get(targetUserId);
   if (!socketIds || !io) return;
 
@@ -468,20 +500,20 @@ export function notifyUserOfNewDm(targetUserId, room, senderInfo) {
     });
   }
 
-  broadcastPresence(room.id);
+  await broadcastPresence(room.id);
 }
 
 // Called from the REST layer right after a user is promoted to admin. Tells
 // their own live client(s) immediately (so admin-only UI shows up without a
 // re-login) and refreshes presence in every room they're currently in, so
 // other members' room panels stop offering to promote someone who already is.
-export function notifyUserPromoted(userId) {
+export async function notifyUserPromoted(userId) {
   const socketIds = userSockets.get(userId);
   if (!socketIds || !io) return;
 
   // A brand-new admin should see the whole shared support inbox immediately,
   // not just the threads they'd personally started as a regular user.
-  const supportRoomIds = listAllSupportRoomIds();
+  const supportRoomIds = await listAllSupportRoomIds();
 
   for (const socketId of socketIds) {
     const socket = io.sockets.sockets.get(socketId);
@@ -494,15 +526,15 @@ export function notifyUserPromoted(userId) {
 
       // Without this, the new admin's socket has the room server-side but
       // their sidebar has no idea it exists until they reload the page.
-      const info = db
-        .prepare(
-          `SELECT pr.name AS public_room_name, u.username AS initiator_username, u.is_guest AS initiator_is_guest
-           FROM rooms r
-           JOIN rooms pr ON pr.id = r.support_for_room_id
-           JOIN users u ON u.id = r.support_for_user_id
-           WHERE r.id = ?`
-        )
-        .get(roomId);
+      const { rows } = await pool.query(
+        `SELECT pr.name AS public_room_name, u.username AS initiator_username, u.is_guest AS initiator_is_guest
+         FROM rooms r
+         JOIN rooms pr ON pr.id = r.support_for_room_id
+         JOIN users u ON u.id = r.support_for_user_id
+         WHERE r.id = $1`,
+        [roomId]
+      );
+      const info = rows[0];
       if (info) {
         socket.emit('dm:new', {
           room: {
@@ -515,7 +547,7 @@ export function notifyUserPromoted(userId) {
     }
 
     socket.emit('role:updated', { isAdmin: true });
-    for (const roomId of socket.data.currentRooms || []) broadcastPresence(roomId);
+    for (const roomId of socket.data.currentRooms || []) await broadcastPresence(roomId);
   }
 }
 
@@ -524,11 +556,12 @@ export function notifyUserPromoted(userId) {
 // admin — joins their socket(s) to it and lets their sidebar pick it up —
 // same idea as notifyUserOfNewDm, just fanned out to a role instead of one
 // fixed recipient.
-export function notifyAdminsOfNewSupportThread(supportRoom, publicRoom, initiatorInfo) {
+export async function notifyAdminsOfNewSupportThread(supportRoom, publicRoom, initiatorInfo) {
   if (!io) return;
 
   for (const [userId, socketIds] of userSockets.entries()) {
-    const isAdmin = db.prepare('SELECT role FROM users WHERE id = ?').get(userId)?.role === 'admin';
+    const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+    const isAdmin = rows[0]?.role === 'admin';
     if (!isAdmin) continue;
 
     for (const socketId of socketIds) {
@@ -549,5 +582,5 @@ export function notifyAdminsOfNewSupportThread(supportRoom, publicRoom, initiato
     }
   }
 
-  broadcastPresence(supportRoom.id);
+  await broadcastPresence(supportRoom.id);
 }

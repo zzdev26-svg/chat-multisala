@@ -8,7 +8,7 @@ import roomsRoutes from './routes/rooms.js';
 import callsRoutes from './routes/calls.js';
 import usersRoutes from './routes/users.js';
 import { registerSocketHandlers } from './socket.js';
-import './db/index.js'; // ensures schema is created on boot
+import { initDb } from './db/index.js';
 
 const app = express();
 app.use(cors({ origin: CLIENT_ORIGIN }));
@@ -31,6 +31,8 @@ const io = new Server(httpServer, {
 });
 
 registerSocketHandlers(io);
+
+await initDb();
 
 httpServer.listen(PORT, () => {
   console.log(`Servidor de chat escuchando en http://localhost:${PORT}`);
